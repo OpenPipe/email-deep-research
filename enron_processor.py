@@ -31,20 +31,25 @@ def parse_emails(csv_path, max_emails=100):
     df = pd.read_csv(csv_path)
     print(f"Loaded {len(df)} emails")
     if max_emails and max_emails < len(df):
-        print(f"Limiting to first {max_emails} emails")
-        df = df.head(max_emails)
+        print(f"Limiting to {max_emails} emails")
+        df = df.sample(max_emails, random_state=42)
     structured_emails = []
     print("Parsing emails...")
     for i, row in tqdm(df.iterrows(), total=len(df)):
         try:
             mail = mailparser.parse_from_string(row["message"])
+            if len(mail.from_) != 1:
+                print(f"Warning: Expected 1 from, got {len(mail.from_)}")
+            if mail.from_[0][0] != "":
+                print(f"Warning: Expected From, got '{mail.from_[0][0]}'")
+
             structured_email = {
                 "message_id": mail.message_id,
                 "subject": mail.subject,
-                "from": mail.from_,
-                "to": mail.to,
-                "cc": mail.cc,
-                "bcc": mail.bcc,
+                "from": mail.from_[0][1],
+                "to": [t[1] for t in mail.to],
+                "cc": [t[1] for t in mail.cc],
+                "bcc": [t[1] for t in mail.bcc],
                 "date": mail.date,
                 "body": mail.body,
                 "file_name": row["file"],
