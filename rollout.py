@@ -329,6 +329,6 @@ if __name__ == "__main__":
 
     import asyncio
 
-    # asyncio.run(benchmark_model("openai/gpt-4o"))
+    asyncio.run(benchmark_model("openai/gpt-4o"))
     asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
     asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))
