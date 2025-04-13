@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 from utils import cache
 from test_and_train_inboxes import train_inboxes, test_inboxes
-from datasets import Dataset, Features, Value, Sequence
+from datasets import Dataset, Features, Value, Sequence, DatasetDict
 from huggingface_hub import HfApi, create_repo
 from panza import limit_concurrency
 from tqdm.asyncio import tqdm
@@ -344,7 +344,7 @@ async def create_and_push_dataset(
 ):
     """
     Generates sample queries concurrently for specified numbers of train and test inboxes,
-    creates a Hugging Face dataset, and pushes it to the Hub.
+    creates a Hugging Face dataset with 'train' and 'test' splits, and pushes it to the Hub.
     """
     logging.info(f"Starting dataset generation for {hf_repo_id}")
     logging.info(
@@ -357,6 +357,9 @@ async def create_and_push_dataset(
     # Select inboxes from both train and test sets
     selected_train_inboxes = train_inboxes[:num_train_inboxes]
     selected_test_inboxes = test_inboxes[:num_test_inboxes]
+    # Use sets for efficient lookup later
+    train_inbox_set = set(selected_train_inboxes)
+    test_inbox_set = set(selected_test_inboxes)
     target_inboxes = selected_train_inboxes + selected_test_inboxes
     logging.info(f"Total target inboxes: {len(target_inboxes)}")
 
@@ -378,7 +381,7 @@ async def create_and_push_dataset(
             batches_prepared_for_inbox = 0
             for i in range(batches_per_inbox):
                 logging.debug(
-                    f"Fetching batch {i+1}/{batches_per_inbox} for {inbox_address}..."
+                    f"Fetching batch {i + 1}/{batches_per_inbox} for {inbox_address}..."
                 )
                 try:
                     email_chunk = next(email_chunk_iterator)
@@ -407,7 +410,7 @@ async def create_and_push_dataset(
                 except Exception as e:
                     # Log error during batch fetching but continue if possible
                     logging.error(
-                        f"An unexpected error occurred fetching batch {i+1} for {inbox_address}: {e}",
+                        f"An unexpected error occurred fetching batch {i + 1} for {inbox_address}: {e}",
                         exc_info=True,
                     )
                     continue  # Try next batch for this inbox
@@ -432,7 +435,7 @@ async def create_and_push_dataset(
     results = await tqdm.gather(*tasks)
     logging.info("All generation tasks completed.")
 
-    # --- Result Aggregation Phase ---
+    # --- Result Aggregation and Splitting Phase ---
     all_queries: List[SyntheticQuery] = []
     successful_batches = 0
     failed_batches = 0
@@ -469,18 +472,26 @@ async def create_and_push_dataset(
         )
         return
 
-    # --- Create Hugging Face Dataset ---
-    logging.info("Preparing data for Hugging Face dataset...")
+    # Separate queries into train and test lists
+    train_queries: List[SyntheticQuery] = []
+    test_queries: List[SyntheticQuery] = []
+    for query in all_queries:
+        if query.inbox_address in train_inbox_set:
+            train_queries.append(query)
+        elif query.inbox_address in test_inbox_set:
+            test_queries.append(query)
+        else:
+            # This shouldn't happen based on the task creation logic, but good to check
+            logging.warning(
+                f"Query for inbox '{query.inbox_address}' does not belong to selected train or test sets. Skipping."
+            )
 
-    # Convert list of Pydantic objects to dict of lists (now including query_date)
-    data_dict = {
-        "question": [q.question for q in all_queries],
-        "answer": [q.answer for q in all_queries],
-        "message_ids": [q.message_ids for q in all_queries],
-        "how_realistic": [q.how_realistic for q in all_queries],
-        "inbox_address": [q.inbox_address for q in all_queries],
-        "query_date": [q.query_date for q in all_queries],  # New field
-    }
+    logging.info(
+        f"Separated queries: {len(train_queries)} train, {len(test_queries)} test."
+    )
+
+    # --- Create Hugging Face DatasetDict ---
+    logging.info("Preparing data for Hugging Face DatasetDict...")
 
     # Define dataset features (adding query_date as a string type)
     features = Features(
@@ -494,18 +505,50 @@ async def create_and_push_dataset(
         }
     )
 
+    # Helper function to convert list of queries to dict of lists
+    def queries_to_dict(queries: List[SyntheticQuery]) -> Dict[str, Any]:
+        if not queries:
+            # Return empty dict with correct keys if list is empty
+            return {
+                "question": [],
+                "answer": [],
+                "message_ids": [],
+                "how_realistic": [],
+                "inbox_address": [],
+                "query_date": [],
+            }
+        return {
+            "question": [q.question for q in queries],
+            "answer": [q.answer for q in queries],
+            "message_ids": [q.message_ids for q in queries],
+            "how_realistic": [q.how_realistic for q in queries],
+            "inbox_address": [q.inbox_address for q in queries],
+            "query_date": [q.query_date for q in queries],
+        }
+
+    train_data_dict = queries_to_dict(train_queries)
+    test_data_dict = queries_to_dict(test_queries)
+
     try:
-        logging.info("Creating dataset object...")
-        hf_dataset = Dataset.from_dict(data_dict, features=features)
-        logging.info(f"Dataset created with {len(hf_dataset)} rows.")
+        logging.info("Creating DatasetDict object...")
+        hf_dataset_dict = DatasetDict(
+            {
+                "train": Dataset.from_dict(train_data_dict, features=features),
+                "test": Dataset.from_dict(test_data_dict, features=features),
+            }
+        )
+        logging.info(f"DatasetDict created with splits: {list(hf_dataset_dict.keys())}")
+        logging.info(f"Train split size: {len(hf_dataset_dict['train'])}")
+        logging.info(f"Test split size: {len(hf_dataset_dict['test'])}")
 
         # --- Push to Hub ---
-        logging.info(f"Pushing dataset to Hugging Face Hub: {hf_repo_id}")
+        logging.info(f"Pushing DatasetDict to Hugging Face Hub: {hf_repo_id}")
         # Ensure the repo exists, create if it doesn't (make it public)
         create_repo(hf_repo_id, repo_type="dataset", exist_ok=True)
 
-        hf_dataset.push_to_hub(hf_repo_id, private=False)  # Ensure public
-        logging.info(f"Successfully pushed dataset to {hf_repo_id}")
+        # Push the entire DatasetDict
+        hf_dataset_dict.push_to_hub(hf_repo_id, private=False)  # Ensure public
+        logging.info(f"Successfully pushed DatasetDict to {hf_repo_id}")
         print(
             f"\nDataset successfully pushed: https://huggingface.co/datasets/{hf_repo_id}"
         )

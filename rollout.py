@@ -19,6 +19,8 @@ from utils import convert_litellm_choice_to_openai
 from pprint import pprint
 import yaml
 from dataclasses import dataclass
+from art.utils import limit_concurrency
+from tqdm.asyncio import tqdm
 
 litellm.cache = Cache(type=LiteLLMCacheType.DISK)
 
@@ -42,7 +44,7 @@ class FinalRubric:
     bad_tool_call_args: bool = False
     ran_out_of_turns: bool = False
     returned_i_dont_know: bool = False
-    found_some_answer: bool = False
+    attempted_answer: bool = False
     answer_correct: bool = False
     sources_correct: bool = False
     num_sources: int = 0
@@ -81,7 +83,7 @@ def reward_and_metrics(
         return -1.8 + partial_rewards, metrics
 
     # No formatting error, but wrong answer: reward will be -1 to 0
-    if rubric.found_some_answer and not rubric.answer_correct:
+    if rubric.attempted_answer and not rubric.answer_correct:
         return -1 + partial_rewards, metrics
 
     # Returned no answer at all: reward will be 0 to 1
@@ -93,10 +95,10 @@ def reward_and_metrics(
         # Partial credit calculation is different for correct answers.
 
         reward = 1
-        reward += 0.1 if rubric.sources_correct else 0
+        reward += 0.3 if rubric.sources_correct else 0
 
         # Extra credit for not including extra sources.
-        reward += 0.1 / rubric.num_sources
+        reward += 0.1 / rubric.num_sources if rubric.num_sources > 0 else 0
 
         # Extra credit for being faster.
         reward += 0.1 * rubric.num_turns / MAX_TURNS
@@ -148,15 +150,35 @@ def to_messages(
 
 
 async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> bool:
-    system_prompt = "Your purpose is to judge "
+    system_prompt = "You will be given an question and two different answers to the question, the correct answer and the answer given by an AI. Your job is to determine if the answer given by the AI is correct. Return True if the answer is semantically similar to the correct answer, and False otherwise. Return only the word True or False, no other text."
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": f"Question: {query.question}\nCorrect answer: {query.answer}\nAI answer: {answer}",
+        },
+    ]
+
+    response = await acompletion(
+        model="gemini/gemini-2.0-flash",
+        messages=messages,
+        temperature=0,
+        caching=True,
+        max_tokens=2,
+    )
+
+    return response.choices[0].message.content.strip().lower().startswith("t")  # type: ignore
 
 
+@limit_concurrency(10)
 async def rollout(
     model: str,
-    base_url: Optional[str],
-    query: SyntheticQuery,
+    scenario: SyntheticQuery,
+    trainable: bool,
 ) -> Trajectory:
     rubric = FinalRubric()
+    traj = Trajectory()
 
     system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query.
     
@@ -175,13 +197,12 @@ async def rollout(
         }}
     }}
 
-    User's email address is {query.inbox_address}
-    Today's date is {query.query_date}
+    User's email address is {scenario.inbox_address}
+    Today's date is {scenario.query_date}
     """
-
-    message_history: MessagesAndChoices = [
+    traj.messages_and_choices = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query.question},
+        {"role": "user", "content": scenario.question},
     ]
     final_answer = None
 
@@ -192,18 +213,17 @@ async def rollout(
             rubric.ran_out_of_turns = True
             break
 
-        if rubric.num_turns == 3:
-            print("message history is", to_messages(message_history))
         llm_response = await acompletion(
             model=model,
-            messages=to_messages(message_history),
+            messages=to_messages(traj.messages_and_choices),
             caching=True,  # TODO: remember to turn this off during training
         )
-        print("id is", llm_response.id)
         choice = llm_response.choices[0]  # type: ignore
         assert isinstance(choice, Choices)
-        message_history.append(convert_litellm_choice_to_openai(choice))
-
+        if trainable:
+            traj.messages_and_choices.append(convert_litellm_choice_to_openai(choice))
+        else:
+            traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
         raw_content = choice.message.content
         assert raw_content is not None
         start_index = raw_content.find("{")
@@ -216,6 +236,7 @@ async def rollout(
         try:
             tool_call = json.loads(json_str)
         except Exception as e:
+            traj.logs.append(f"Error parsing tool call: {e}")
             rubric.cant_parse_tool_call = True
             break
 
@@ -227,7 +248,7 @@ async def rollout(
             case "search_emails":
                 try:
                     search_results = search_emails(
-                        inbox=query.inbox_address,
+                        inbox=scenario.inbox_address,
                         keywords=tool_call["tool_args"].get("keywords"),
                         from_addr=tool_call["tool_args"].get("from_addr"),
                         to_addr=tool_call["tool_args"].get("to_addr"),
@@ -235,11 +256,11 @@ async def rollout(
                         sent_before=tool_call["tool_args"].get("sent_before"),
                         max_results=tool_call["tool_args"].get("max_results"),
                     )
-                    message_history.append(
+                    traj.messages_and_choices.append(
                         tool_response([asdict(r) for r in search_results])
                     )
                     for r in search_results:
-                        if r.message_id == query.message_ids[0]:
+                        if r.message_id == scenario.message_ids[0]:
                             rubric.ever_found_right_email = True
                 except Exception as e:
                     rubric.bad_tool_call_args = True
@@ -248,55 +269,66 @@ async def rollout(
                 message_id_to_read = tool_call["tool_args"].get("message_id")
                 email_content = read_email(message_id_to_read)
                 if email_content is None:
-                    message_history.append(tool_response({"error": "Email not found"}))
+                    traj.messages_and_choices.append(
+                        tool_response({"error": "Email not found"})
+                    )
                     rubric.ever_tried_to_read_invalid_email = True
                 else:
-                    if email_content.message_id == query.message_ids[0]:
+                    if email_content.message_id == scenario.message_ids[0]:
                         rubric.ever_read_right_email = True
-                    message_history.append(tool_response(email_content.model_dump()))
+                    traj.messages_and_choices.append(
+                        tool_response(email_content.model_dump())
+                    )
             case "return_final_answer":
-                final_answer = tool_call["tool_args"]
+                final_answer = tool_call["tool_args"]["answer"]
+                final_sources = tool_call["tool_args"]["sources"]
 
-                if final_answer is None:
-                    rubric.bad_tool_call_args = True
+                if final_answer == "I don't know":
+                    rubric.returned_i_dont_know = True
                     break
-                rubric.found_some_answer = True
+                rubric.attempted_answer = True
                 rubric.answer_correct = await determine_if_answer_is_correct(
-                    final_answer, query
+                    final_answer, scenario
                 )
-                rubric.sources_correct = query.message_ids[0] in final_answer["sources"]
+                rubric.sources_correct = scenario.message_ids[0] in final_sources
                 break
             case _:
                 rubric.bad_tool_call_name = True
                 break
 
-    # Sleep for 1 second before finishing
-    await asyncio.sleep(1)
+    reward, metrics = reward_and_metrics(traj, rubric)
+    traj.reward = reward
+    traj.metrics = metrics
+    return traj
 
-    if final_answer is None:
-        return Trajectory(messages_and_choices=message_history, reward=0)
 
-    print("FINAL ANSWER", final_answer)
-    reward = (
-        1.0
-        if final_answer is not None
-        and isinstance(final_answer, dict)
-        and "answer" in final_answer
-        else 0.0
+async def benchmark_model(model: str) -> list[Trajectory]:
+    import polars as pl
+
+    scenarios = load_synthetic_queries(split="test", limit=100)
+    trajectories = await tqdm.gather(
+        *[rollout(model, scenario, False) for scenario in scenarios],
+        desc=f"Benchmarking {model}",
     )
-    return Trajectory(messages_and_choices=message_history, reward=reward)  # type: ignore
+
+    metrics = pl.DataFrame(
+        [t.metrics for t in trajectories],
+    )
+    # Compute mean for each column (averaging the metrics)
+    avg_metrics = metrics.select(
+        [pl.mean(c).alias(c) for c in metrics.columns]
+    ).transpose(include_header=True)
+    print(f"Averaged Metrics for model {model}:")
+    print(avg_metrics.to_pandas().to_markdown())
+
+    return trajectories
 
 
 if __name__ == "__main__":
-    import asyncio
     from query_iterators import load_synthetic_queries
 
-    queries = load_synthetic_queries(limit=5)
+    import asyncio
 
-    print("Starting rollout")
-    trajectory = asyncio.run(rollout("openai/gpt-4o", None, queries[0]))
-    # Sleep for 1 second before finishing
-    import time
-
-    time.sleep(1)
-    # print(yaml.dump(trajectory.for_logging()))
+    # asyncio.run(benchmark_model("openai/gpt-4o"))
+    asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
+    asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))

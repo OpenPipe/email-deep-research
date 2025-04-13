@@ -118,12 +118,12 @@ def search_emails(
     # -1 means highlight across all columns (subject, body)
     sql = f"""
         SELECT
-            e.id,
+            e.message_id,
             snippet(emails_fts, -1, '<b>', '</b>', ' ... ', 15) as snippet
         FROM
             emails e JOIN emails_fts fts ON e.id = fts.rowid
         WHERE
-            {' AND '.join(where_clauses)}
+            {" AND ".join(where_clauses)}
         ORDER BY
             e.date DESC -- Order by date for relevance
         LIMIT ?;
