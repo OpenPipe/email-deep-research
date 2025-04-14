@@ -1,5 +1,5 @@
 [project]
-name = "enron-email-agent"
+name = "email-deep-research"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -29,4 +29,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-openpipe-art = { path = "../../ART", editable = true }
+openpipe-art = { path = "../ART", editable = true }
