@@ -1,0 +1,26 @@
+# To launch, run the following command from the root directory of the art repository:
+# `uv run sky launch skypilot.yaml --cluster=kyle-email-agent-001 --env-file=.env --yes --retry-until-up --down --idle-minutes-to-autostop 60`
+
+workdir: .
+resources:
+  accelerators: ["H100-SXM:1"]
+envs:
+  HF_HUB_ENABLE_HF_TRANSFER: 1
+  WANDB_API_KEY:
+  OPENPIPE_API_KEY:
+
+file_mounts:
+  ~/ART: ../../ART
+
+setup: |
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+
+  source $HOME/.local/bin/env
+
+  uv remove openpipe-art
+  uv add ~/ART
+  uv sync
+
+run: |
+  echo "Running training script..."
+  uv run python train.py

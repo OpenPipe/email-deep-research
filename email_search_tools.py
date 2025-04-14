@@ -12,9 +12,16 @@ logging.basicConfig(
 )
 
 
-conn = sqlite3.connect(
-    f"file:{DEFAULT_DB_PATH}?mode=ro", uri=True, check_same_thread=False
-)
+conn = None
+
+
+def get_conn():
+    global conn
+    if conn is None:
+        conn = sqlite3.connect(
+            f"file:{DEFAULT_DB_PATH}?mode=ro", uri=True, check_same_thread=False
+        )
+    return conn
 
 
 @dataclass
@@ -54,15 +61,14 @@ def search_emails(
     sql: Optional[str] = None
     params: List[str | int] = []
 
-    cursor = conn.cursor()
+    cursor = get_conn().cursor()
 
     # --- Build Query ---
     where_clauses: List[str] = []
 
     # 1. Keywords (FTS)
     if not keywords:
-        logging.warning("No keywords provided for search. Returning empty results.")
-        return []
+        raise ValueError("No keywords provided for search.")
 
     # FTS5 default is AND, so just join keywords. Escape quotes for safety.
     fts_query = " ".join(f""" "{k.replace('"', '""')}" """ for k in keywords)
@@ -156,7 +162,7 @@ def read_email(message_id: str) -> Optional[Email]:
         or None if the email is not found or an error occurs.
     """
 
-    cursor = conn.cursor()
+    cursor = get_conn().cursor()
 
     # --- Query for Email Core Details ---
     email_sql = """

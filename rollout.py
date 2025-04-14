@@ -1,4 +1,4 @@
-from typing import Optional, List, Any
+from typing import List, Any
 from types_enron import SyntheticQuery
 from art import Trajectory
 from art.types import MessagesAndChoices
@@ -7,22 +7,25 @@ from litellm import acompletion
 import litellm
 from email_search_tools import search_emails, read_email
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from datetime import datetime
 from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
-import traceback
-from litellm.types.utils import Choices
+from litellm.types.utils import Choices, ModelResponse
 from dataclasses import asdict
 from utils import convert_litellm_choice_to_openai
-from pprint import pprint
-import yaml
 from dataclasses import dataclass
 from art.utils import limit_concurrency
 from tqdm.asyncio import tqdm
+import os
+from openpipe import AsyncOpenPipe
+from datetime import datetime
+
 
 litellm.cache = Cache(type=LiteLLMCacheType.DISK)
+
+# Initialize OpenPipe client (ensure OPENPIPE_API_KEY is in your .env)
+op_client = AsyncOpenPipe()
 
 """
 Steps for implementing the rollout function:
@@ -87,7 +90,7 @@ def reward_and_metrics(
         return -1 + partial_rewards, metrics
 
     # Returned no answer at all: reward will be 0 to 1
-    if rubric.returned_i_dont_know:
+    if rubric.returned_i_dont_know or rubric.ran_out_of_turns:
         return 0 + partial_rewards, metrics
 
     # Answer is correct: reward will be 1 to 2
@@ -175,10 +178,13 @@ async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> 
 async def rollout(
     model: str,
     scenario: SyntheticQuery,
-    trainable: bool,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    trainable: bool = False,
 ) -> Trajectory:
+    rollout_start_time = datetime.now()  # Record start time
     rubric = FinalRubric()
-    traj = Trajectory()
+    traj = Trajectory(metadata={"email_inbox": scenario.inbox_address})
 
     system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query.
     
@@ -204,6 +210,7 @@ async def rollout(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": scenario.question},
     ]
+    llm_response: ModelResponse | None = None
     final_answer = None
 
     while True:
@@ -215,9 +222,12 @@ async def rollout(
 
         llm_response = await acompletion(
             model=model,
+            base_url=base_url,
             messages=to_messages(traj.messages_and_choices),
-            caching=True,  # TODO: remember to turn this off during training
-        )
+            caching=not trainable,
+            api_key=api_key,
+        )  # type: ignore
+
         choice = llm_response.choices[0]  # type: ignore
         assert isinstance(choice, Choices)
         if trainable:
@@ -267,6 +277,8 @@ async def rollout(
                     break
             case "read_email":
                 message_id_to_read = tool_call["tool_args"].get("message_id")
+                if message_id_to_read == scenario.message_ids[0]:
+                    rubric.ever_read_right_email = True
                 email_content = read_email(message_id_to_read)
                 if email_content is None:
                     traj.messages_and_choices.append(
@@ -274,8 +286,6 @@ async def rollout(
                     )
                     rubric.ever_tried_to_read_invalid_email = True
                 else:
-                    if email_content.message_id == scenario.message_ids[0]:
-                        rubric.ever_read_right_email = True
                     traj.messages_and_choices.append(
                         tool_response(email_content.model_dump())
                     )
@@ -285,12 +295,12 @@ async def rollout(
 
                 if final_answer == "I don't know":
                     rubric.returned_i_dont_know = True
-                    break
-                rubric.attempted_answer = True
-                rubric.answer_correct = await determine_if_answer_is_correct(
-                    final_answer, scenario
-                )
-                rubric.sources_correct = scenario.message_ids[0] in final_sources
+                else:
+                    rubric.attempted_answer = True
+                    rubric.answer_correct = await determine_if_answer_is_correct(
+                        final_answer, scenario
+                    )
+                    rubric.sources_correct = scenario.message_ids[0] in final_sources
                 break
             case _:
                 rubric.bad_tool_call_name = True
@@ -299,15 +309,40 @@ async def rollout(
     reward, metrics = reward_and_metrics(traj, rubric)
     traj.reward = reward
     traj.metrics = metrics
+    rollout_end_time = datetime.now()  # Record end time
+
+    # Report the entire trajectory to OpenPipe once at the end
+    try:
+        await op_client.report(
+            requested_at=rollout_start_time.timestamp() * 1000,
+            received_at=rollout_end_time.timestamp() * 1000,
+            req_payload={
+                "model": model,
+                "messages": to_messages(traj.messages_and_choices)[:-1],
+                "metadata": {
+                    "type": "enron_rollout_final",  # Indicate this is the final trajectory report
+                    "reward": str(traj.reward),
+                    **{k: str(v) for k, v in traj.metrics.items()},
+                    **{k: str(v) for k, v in traj.metadata.items()},
+                    # "scenario_id": scenario.id,
+                },
+            },
+            resp_payload=llm_response,
+            status_code=200,
+        )
+    except Exception as e:
+        print(f"Error reporting to OpenPipe: {e}")
+
     return traj
 
 
 async def benchmark_model(model: str) -> list[Trajectory]:
     import polars as pl
+    from query_iterators import load_synthetic_queries
 
     scenarios = load_synthetic_queries(split="test", limit=100)
     trajectories = await tqdm.gather(
-        *[rollout(model, scenario, False) for scenario in scenarios],
+        *[rollout(model, scenario, trainable=False) for scenario in scenarios],
         desc=f"Benchmarking {model}",
     )
 
@@ -326,9 +361,28 @@ async def benchmark_model(model: str) -> list[Trajectory]:
 
 if __name__ == "__main__":
     from query_iterators import load_synthetic_queries
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
     import asyncio
 
-    asyncio.run(benchmark_model("openai/gpt-4o"))
-    asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
-    asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))
+    # Ensure OPENPIPE_API_KEY is loaded before running
+    if not os.getenv("OPENPIPE_API_KEY"):
+        print(
+            "Warning: OPENPIPE_API_KEY environment variable not set. OpenPipe logging will fail."
+        )
+        # Optionally exit or proceed without logging
+        # exit(1)
+
+    asyncio.run(
+        rollout(
+            "openai/gpt-4o",
+            load_synthetic_queries(split="test", limit=1)[0],
+            trainable=False,
+        )
+    )
+
+    # asyncio.run(benchmark_model("openai/gpt-4o"))
+    # asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
+    # asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))

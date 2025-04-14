@@ -253,8 +253,9 @@ def generate_database(overwrite: bool = False):
         # If not overwriting and file exists, subsequent steps might fail or behave unexpectedly.
         # We are removing the explicit error here as requested.
         logging.warning(
-            f"Database file {DEFAULT_DB_PATH} exists and overwrite is False. Proceeding..."
+            f"Database file {DEFAULT_DB_PATH} exists and overwrite is False. Assuming file is already generated."
         )
+        return
 
     # 1. Download dataset
     dataset = download_dataset(DEFAULT_REPO_ID)
