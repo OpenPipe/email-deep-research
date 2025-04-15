@@ -10,7 +10,7 @@ envs:
   OPENPIPE_API_KEY:
 
 file_mounts:
-  ~/ART: ../../ART
+  ~/ART: ../ART
 
 setup: |
   curl -LsSf https://astral.sh/uv/install.sh | sh

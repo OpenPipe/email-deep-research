@@ -10,16 +10,16 @@ from art.utils import iterate_dataset
 
 load_dotenv()
 
-MODEL_NAME = "email-agent-001"
+MODEL_NAME = "email-agent-002"
 BASE_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 LEARNING_RATE = 1.2e-5
-EVAL_STEPS = 50
+EVAL_STEPS = 30
 VAL_SET_SIZE = 100
-TRAINING_DATASET_SIZE = 1000
-BATCH_SIZE = 4
+TRAINING_DATASET_SIZE = 4000
+BATCH_SIZE = 8
 TRAJECTORIES_PER_GROUP = 6
 PROJECT = "email_agent"
-NUM_EPOCHS = 1
+NUM_EPOCHS = 4
 
 
 async def main():
@@ -86,7 +86,7 @@ async def main():
                         scenario=item,
                         base_url=base_url,
                         api_key=api_key,
-                        trainable=False,
+                        trainable=True,
                     )
                     for item in val_scenarios
                 ),

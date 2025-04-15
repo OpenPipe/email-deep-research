@@ -1,3 +1,6 @@
 *.db
 *.log
 ./data
+.litellm_cache
+__pycache__
+.env

@@ -26,6 +26,7 @@ dependencies = [
     "skypilot[runpod]>=0.8.1",
     "openpipe==4.49.0",
     "litellm>=1.65.0.post1",
+    "ipywidgets>=8.1.6",
 ]
 
 [tool.uv.sources]

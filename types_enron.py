@@ -3,6 +3,7 @@ from typing import List, Optional
 
 
 class SyntheticQuery(BaseModel):
+    id: int
     question: str
     answer: str
     message_ids: List[str]  # message_ids (strings) of referenced emails

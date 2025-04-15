@@ -25,7 +25,10 @@ from datetime import datetime
 litellm.cache = Cache(type=LiteLLMCacheType.DISK)
 
 # Initialize OpenPipe client (ensure OPENPIPE_API_KEY is in your .env)
-op_client = AsyncOpenPipe()
+if os.getenv("OPENPIPE_API_KEY"):
+    op_client = AsyncOpenPipe()
+else:
+    op_client = None
 
 """
 Steps for implementing the rollout function:
@@ -181,12 +184,13 @@ async def rollout(
     base_url: str | None = None,
     api_key: str | None = None,
     trainable: bool = False,
+    log_to_openpipe: bool = True,
 ) -> Trajectory:
     rollout_start_time = datetime.now()  # Record start time
     rubric = FinalRubric()
     traj = Trajectory(metadata={"email_inbox": scenario.inbox_address})
 
-    system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query.
+    system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {MAX_TURNS} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
     
     Here are the tools you can use:
     {tools}
@@ -252,6 +256,7 @@ async def rollout(
 
         if "tool_args" not in tool_call:
             rubric.bad_tool_call_args = True
+            traj.logs.append(f"Tool call missing tool_args: {tool_call}")
             break
 
         match tool_call.get("tool_name"):
@@ -274,6 +279,7 @@ async def rollout(
                             rubric.ever_found_right_email = True
                 except Exception as e:
                     rubric.bad_tool_call_args = True
+                    traj.logs.append(f"Error searching emails: {e}")
                     break
             case "read_email":
                 message_id_to_read = tool_call["tool_args"].get("message_id")
@@ -311,36 +317,35 @@ async def rollout(
     traj.metrics = metrics
     rollout_end_time = datetime.now()  # Record end time
 
-    # Report the entire trajectory to OpenPipe once at the end
-    try:
-        await op_client.report(
-            requested_at=rollout_start_time.timestamp() * 1000,
-            received_at=rollout_end_time.timestamp() * 1000,
-            req_payload={
-                "model": model,
-                "messages": to_messages(traj.messages_and_choices)[:-1],
-                "metadata": {
-                    "type": "enron_rollout_final",  # Indicate this is the final trajectory report
-                    "reward": str(traj.reward),
-                    **{k: str(v) for k, v in traj.metrics.items()},
-                    **{k: str(v) for k, v in traj.metadata.items()},
-                    # "scenario_id": scenario.id,
+    if log_to_openpipe and op_client is not None:
+        try:
+            await op_client.report(
+                requested_at=rollout_start_time.timestamp() * 1000,
+                received_at=rollout_end_time.timestamp() * 1000,
+                req_payload={
+                    "model": model,
+                    "messages": to_messages(traj.messages_and_choices)[:-1],
+                    "metadata": {
+                        "type": "enron_rollout_final",
+                        "reward": str(traj.reward),
+                        **{k: str(v) for k, v in traj.metrics.items()},
+                        **{k: str(v) for k, v in traj.metadata.items()},
+                    },
                 },
-            },
-            resp_payload=llm_response,
-            status_code=200,
-        )
-    except Exception as e:
-        print(f"Error reporting to OpenPipe: {e}")
+                resp_payload=llm_response,
+                status_code=200,
+            )
+        except Exception as e:
+            print(f"Error reporting to OpenPipe: {e}")
 
     return traj
 
 
-async def benchmark_model(model: str) -> list[Trajectory]:
+async def benchmark_model(model: str, limit: int = 10) -> list[Trajectory]:
     import polars as pl
     from query_iterators import load_synthetic_queries
 
-    scenarios = load_synthetic_queries(split="test", limit=100)
+    scenarios = load_synthetic_queries(split="test", limit=limit)
     trajectories = await tqdm.gather(
         *[rollout(model, scenario, trainable=False) for scenario in scenarios],
         desc=f"Benchmarking {model}",
@@ -355,6 +360,8 @@ async def benchmark_model(model: str) -> list[Trajectory]:
     ).transpose(include_header=True)
     print(f"Averaged Metrics for model {model}:")
     print(avg_metrics.to_pandas().to_markdown())
+    print(f"Trajectory")
+    print(trajectories[0].for_logging())
 
     return trajectories
 
@@ -367,22 +374,14 @@ if __name__ == "__main__":
 
     import asyncio
 
-    # Ensure OPENPIPE_API_KEY is loaded before running
-    if not os.getenv("OPENPIPE_API_KEY"):
-        print(
-            "Warning: OPENPIPE_API_KEY environment variable not set. OpenPipe logging will fail."
-        )
-        # Optionally exit or proceed without logging
-        # exit(1)
+    # asyncio.run(
+    #     rollout(
+    #         "openai/gpt-4o",
+    #         load_synthetic_queries(split="test", limit=1)[0],
+    #         trainable=False,
+    #     )
+    # )
 
-    asyncio.run(
-        rollout(
-            "openai/gpt-4o",
-            load_synthetic_queries(split="test", limit=1)[0],
-            trainable=False,
-        )
-    )
-
-    # asyncio.run(benchmark_model("openai/gpt-4o"))
+    asyncio.run(benchmark_model("openai/gpt-4o"))
     # asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
     # asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))

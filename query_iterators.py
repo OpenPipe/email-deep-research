@@ -22,9 +22,6 @@ def load_synthetic_queries(
     if shuffle:
         dataset = dataset.shuffle()
 
-    if limit is not None:
-        dataset = dataset.select(range(limit))
-
     # Convert each row (dict) in the dataset to a SyntheticQuery object
     # Apply the limit *after* conversion if specified
     queries = [SyntheticQuery(**row) for row in dataset]  # type: ignore

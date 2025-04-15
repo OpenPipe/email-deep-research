@@ -221,5 +221,4 @@ def read_email(message_id: str) -> Optional[Email]:
         file_name=file_name,
     )
 
-    logging.info(f"Successfully retrieved email with message_id '{message_id}'.")
     return email_obj
