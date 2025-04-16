@@ -1,5 +1,5 @@
 # To launch, run the following command from the root directory of the art repository:
-# `uv run sky launch skypilot.yaml --cluster=kyle-email-agent-001 --env-file=.env --yes --retry-until-up --down --idle-minutes-to-autostop 60`
+# `uv run sky launch skypilot.yaml --env-file=.env --yes --retry-until-up --down --idle-minutes-to-autostop 60 --fast --cluster=kyle-email-agent-002 --env RUN_ID=002`
 
 workdir: .
 resources:
@@ -8,6 +8,7 @@ envs:
   HF_HUB_ENABLE_HF_TRANSFER: 1
   WANDB_API_KEY:
   OPENPIPE_API_KEY:
+  RUN_ID:
 
 file_mounts:
   ~/ART: ../ART
@@ -23,4 +24,4 @@ setup: |
 
 run: |
   echo "Running training script..."
-  uv run python train.py
+  uv run python email_deep_research/train.py

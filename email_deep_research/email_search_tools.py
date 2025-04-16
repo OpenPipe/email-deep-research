@@ -1,11 +1,10 @@
 import sqlite3
 import logging
-from typing import List, Dict, Optional
+from typing import List, Optional
 from dataclasses import dataclass
-from pathlib import Path
 
-from local_email_db import DEFAULT_DB_PATH
-from types_enron import Email
+from .local_email_db import DEFAULT_DB_PATH
+from .types_enron import Email
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

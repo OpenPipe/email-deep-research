@@ -1,11 +1,12 @@
+import art
 from typing import List, Any
-from types_enron import SyntheticQuery
+from email_deep_research.types_enron import SyntheticQuery
 from art import Trajectory
 from art.types import MessagesAndChoices
 from openai.types.chat.chat_completion import Choice
 from litellm import acompletion
 import litellm
-from email_search_tools import search_emails, read_email
+from email_deep_research.email_search_tools import search_emails, read_email
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
@@ -13,14 +14,14 @@ from openai.types.chat.chat_completion_message_param import ChatCompletionMessag
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from litellm.types.utils import Choices, ModelResponse
 from dataclasses import asdict
-from utils import convert_litellm_choice_to_openai
+from email_deep_research.utils import convert_litellm_choice_to_openai
 from dataclasses import dataclass
 from art.utils import limit_concurrency
 from tqdm.asyncio import tqdm
 import os
 from openpipe import AsyncOpenPipe
 from datetime import datetime
-
+from project_types import ProjectPolicyConfig
 
 litellm.cache = Cache(type=LiteLLMCacheType.DISK)
 
@@ -39,8 +40,6 @@ Steps for implementing the rollout function:
 search_tool = convert_to_openai_tool(search_emails)
 del search_tool["function"]["parameters"]["properties"]["inbox"]
 search_tool["function"]["parameters"]["required"].remove("inbox")
-
-MAX_TURNS = 10
 
 
 @dataclass
@@ -64,15 +63,16 @@ class FinalRubric:
 
 
 def reward_and_metrics(
-    trajectory: Trajectory, rubric: FinalRubric
+    policy_config: ProjectPolicyConfig, rubric: FinalRubric
 ) -> tuple[float, dict]:
     metrics = rubric.to_metrics()
 
     # Note: make sure all possible partial rewards always sum to less than 0.5.
     partial_rewards = 0
-    partial_rewards += (
-        (rubric.num_turns / MAX_TURNS) / 10
-    )  # You get up to 0.1 points for running through the turn limit instead of giving up early
+    if policy_config.reward_extra_turns:
+        partial_rewards += (
+            (rubric.num_turns / policy_config.max_turns) / 10
+        )  # You get up to 0.1 points for running through the turn limit instead of giving up early
     partial_rewards += 0.1 if rubric.ever_found_right_email else 0
     partial_rewards += 0.1 if rubric.ever_read_right_email else 0
     partial_rewards += 0.1 if not rubric.ever_tried_to_read_invalid_email else 0
@@ -107,7 +107,7 @@ def reward_and_metrics(
         reward += 0.1 / rubric.num_sources if rubric.num_sources > 0 else 0
 
         # Extra credit for being faster.
-        reward += 0.1 * rubric.num_turns / MAX_TURNS
+        reward += 0.1 * rubric.num_turns / policy_config.max_turns
         return reward, metrics
 
     print(rubric)
@@ -177,20 +177,21 @@ async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> 
     return response.choices[0].message.content.strip().lower().startswith("t")  # type: ignore
 
 
-@limit_concurrency(10)
+@limit_concurrency(10, derive_key=lambda model, scenario, **kwargs: model.name)
 async def rollout(
-    model: str,
+    model: art.Model,
     scenario: SyntheticQuery,
-    base_url: str | None = None,
-    api_key: str | None = None,
-    trainable: bool = False,
-    log_to_openpipe: bool = True,
 ) -> Trajectory:
-    rollout_start_time = datetime.now()  # Record start time
+    rollout_start_time = datetime.now()
     rubric = FinalRubric()
-    traj = Trajectory(metadata={"email_inbox": scenario.inbox_address})
+    traj = Trajectory(
+        messages_and_choices=[],
+        reward=0,
+        metadata={"email_inbox": scenario.inbox_address},
+    )
+    assert isinstance(model.config, ProjectPolicyConfig)
 
-    system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {MAX_TURNS} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
+    system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {model.config.max_turns} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
     
     Here are the tools you can use:
     {tools}
@@ -220,21 +221,26 @@ async def rollout(
     while True:
         rubric.num_turns += 1
 
-        if rubric.num_turns > MAX_TURNS:
+        if rubric.num_turns > model.config.max_turns:
             rubric.ran_out_of_turns = True
             break
 
+        litellm_model_name = model.config.litellm_model_name
+        if litellm_model_name is None:
+            litellm_model_name = f"hosted_vllm/{model.name}"
+
         llm_response = await acompletion(
-            model=model,
-            base_url=base_url,
+            model=litellm_model_name,
+            base_url=model.base_url,
             messages=to_messages(traj.messages_and_choices),
-            caching=not trainable,
-            api_key=api_key,
+            caching=not model.trainable,
+            api_key=model.api_key,
+            max_tokens=model.config.max_tokens,
         )  # type: ignore
 
         choice = llm_response.choices[0]  # type: ignore
         assert isinstance(choice, Choices)
-        if trainable:
+        if model.trainable:
             traj.messages_and_choices.append(convert_litellm_choice_to_openai(choice))
         else:
             traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
@@ -296,8 +302,16 @@ async def rollout(
                         tool_response(email_content.model_dump())
                     )
             case "return_final_answer":
-                final_answer = tool_call["tool_args"]["answer"]
-                final_sources = tool_call["tool_args"]["sources"]
+                final_answer = tool_call["tool_args"].get("answer")
+                final_sources = tool_call["tool_args"].get("sources")
+
+                if (
+                    final_answer is None
+                    or final_sources is None
+                    or not isinstance(final_sources, list)
+                ):
+                    rubric.bad_tool_call_args = True
+                    break
 
                 if final_answer == "I don't know":
                     rubric.returned_i_dont_know = True
@@ -312,18 +326,18 @@ async def rollout(
                 rubric.bad_tool_call_name = True
                 break
 
-    reward, metrics = reward_and_metrics(traj, rubric)
+    reward, metrics = reward_and_metrics(model.config, rubric)
     traj.reward = reward
     traj.metrics = metrics
     rollout_end_time = datetime.now()  # Record end time
 
-    if log_to_openpipe and op_client is not None:
+    if model.config.log_to_openpipe and op_client is not None:
         try:
             await op_client.report(
                 requested_at=rollout_start_time.timestamp() * 1000,
                 received_at=rollout_end_time.timestamp() * 1000,
                 req_payload={
-                    "model": model,
+                    "model": model.name,
                     "messages": to_messages(traj.messages_and_choices)[:-1],
                     "metadata": {
                         "type": "enron_rollout_final",
@@ -341,14 +355,14 @@ async def rollout(
     return traj
 
 
-async def benchmark_model(model: str, limit: int = 10) -> list[Trajectory]:
+async def benchmark_model(model: art.Model, limit: int = 10) -> list[Trajectory]:
     import polars as pl
-    from query_iterators import load_synthetic_queries
+    from email_deep_research.query_iterators import load_synthetic_queries
 
     scenarios = load_synthetic_queries(split="test", limit=limit)
     trajectories = await tqdm.gather(
-        *[rollout(model, scenario, trainable=False) for scenario in scenarios],
-        desc=f"Benchmarking {model}",
+        *[rollout(model, scenario) for scenario in scenarios],
+        desc=f"Benchmarking {model.name}",
     )
 
     metrics = pl.DataFrame(
@@ -358,7 +372,7 @@ async def benchmark_model(model: str, limit: int = 10) -> list[Trajectory]:
     avg_metrics = metrics.select(
         [pl.mean(c).alias(c) for c in metrics.columns]
     ).transpose(include_header=True)
-    print(f"Averaged Metrics for model {model}:")
+    print(f"Averaged Metrics for model {model.name}:")
     print(avg_metrics.to_pandas().to_markdown())
     print(f"Trajectory")
     print(trajectories[0].for_logging())
@@ -367,21 +381,19 @@ async def benchmark_model(model: str, limit: int = 10) -> list[Trajectory]:
 
 
 if __name__ == "__main__":
-    from query_iterators import load_synthetic_queries
+    from email_deep_research.query_iterators import load_synthetic_queries
     from dotenv import load_dotenv
 
     load_dotenv()
 
     import asyncio
 
-    # asyncio.run(
-    #     rollout(
-    #         "openai/gpt-4o",
-    #         load_synthetic_queries(split="test", limit=1)[0],
-    #         trainable=False,
-    #     )
-    # )
-
-    asyncio.run(benchmark_model("openai/gpt-4o"))
-    # asyncio.run(benchmark_model("gemini/gemini-2.0-flash"))
-    # asyncio.run(benchmark_model("gemini/gemini-2.5-pro-preview-03-25"))
+    asyncio.run(
+        benchmark_model(
+            art.Model(
+                name="openai/gpt-4o",
+                project="email_agent",
+                config=ProjectPolicyConfig(log_to_openpipe=False),
+            )
+        )
+    )

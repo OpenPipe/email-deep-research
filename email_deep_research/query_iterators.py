@@ -1,5 +1,5 @@
 # from art.utils import iterate_dataset
-from types_enron import SyntheticQuery
+from email_deep_research.types_enron import SyntheticQuery
 from typing import List, Optional
 from datasets import load_dataset, Dataset
 import random
