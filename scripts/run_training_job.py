@@ -113,7 +113,7 @@ def main():
         "--down",
         f"--idle-minutes-to-autostop={args.idle_minutes}",
         f"--cluster={cluster_name}",
-        f"--env",
+        "--env",
         f"RUN_ID={formatted_run_id}",
     ]
 

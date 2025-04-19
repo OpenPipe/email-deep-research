@@ -9,6 +9,10 @@ envs:
   WANDB_API_KEY:
   OPENPIPE_API_KEY:
   RUN_ID:
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  AWS_REGION:
+  BACKUP_BUCKET:
 
 file_mounts:
   ~/ART: ../ART
@@ -20,6 +24,7 @@ setup: |
 
   uv remove openpipe-art
   uv add ~/ART
+  uv add awscli
   uv sync
 
 run: |

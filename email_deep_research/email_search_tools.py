@@ -69,6 +69,9 @@ def search_emails(
     if not keywords:
         raise ValueError("No keywords provided for search.")
 
+    if max_results > 10:
+        raise ValueError("max_results must be less than or equal to 10.")
+
     # FTS5 default is AND, so just join keywords. Escape quotes for safety.
     fts_query = " ".join(f""" "{k.replace('"', '""')}" """ for k in keywords)
     where_clauses.append("fts.emails_fts MATCH ?")

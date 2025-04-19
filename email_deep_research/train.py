@@ -7,7 +7,8 @@ from query_iterators import load_synthetic_queries
 from types_enron import SyntheticQuery
 from local_email_db import generate_database
 from art.utils import iterate_dataset
-from project_types import ProjectPolicyConfig, TrainingConfig
+from email_deep_research.project_types import ProjectPolicyConfig, TrainingConfig
+from email_deep_research.benchmark import benchmark_model
 
 load_dotenv()
 
@@ -41,6 +42,14 @@ assert isinstance(agent_005.config, ProjectPolicyConfig)
 agent_005.name = "email-agent-005"
 agent_005.config.reward_extra_turns = False
 
+agent_006 = agent_005.model_copy(deep=True)
+agent_006.name = "email-agent-006"
+
+agent_007 = agent_005.model_copy(deep=True)
+agent_007.name = "email-agent-007"
+assert isinstance(agent_007.config, ProjectPolicyConfig)
+agent_007.config.use_tools = True
+
 
 async def run_training(model: art.TrainableModel):
     generate_database()
@@ -49,7 +58,10 @@ async def run_training(model: art.TrainableModel):
     if model.config.training_config is None:
         raise ValueError("Training config is not set")
     api = art.LocalAPI()
-    await model.register_for_training(api)
+    await model.register(api)
+    await model.pull_from_s3(
+        os.environ["BACKUP_BUCKET"],
+    )
 
     print("Loading training data...")
     train_scenarios: List[SyntheticQuery] = load_synthetic_queries(
@@ -70,6 +82,12 @@ async def run_training(model: art.TrainableModel):
     )
 
     for batch, epoch, global_step, epoch_step in train_iterator:
+        if global_step % model.config.training_config.eval_steps == 0:
+            print(f"\n--- Evaluating at Iteration {global_step} ---")
+            await benchmark_model(model)
+            await model.delete_checkpoints()
+            await model.push_to_s3()
+
         groups = await art.gather_trajectory_groups(
             (
                 art.TrajectoryGroup(
@@ -84,23 +102,6 @@ async def run_training(model: art.TrainableModel):
             )
         )
 
-        if val_scenarios and global_step % model.config.training_config.eval_steps == 0:
-            print(f"\n--- Evaluating at Iteration {global_step} ---")
-            print(f"Running validation rollouts on {len(val_scenarios)} samples...")
-
-            val_trajectories = await art.gather_trajectories(
-                (rollout(model, scenario) for scenario in val_scenarios),
-                pbar_desc="validation",
-                max_exceptions=100,
-            )
-
-            valid_trajectories = [
-                t for t in val_trajectories if isinstance(t, art.Trajectory)
-            ]
-
-            await model.log(valid_trajectories)
-            await model.delete_checkpoints()
-
         await model.train(
             groups,
             config=art.TrainConfig(
@@ -108,6 +109,8 @@ async def run_training(model: art.TrainableModel):
             ),
         )
 
+    await benchmark_model(model)
+    await model.push_to_s3()
     print("Training finished.")
 
 
@@ -122,6 +125,10 @@ if __name__ == "__main__":
         config = agent_004
     elif training_config == "005":
         config = agent_005
+    elif training_config == "006":
+        config = agent_006
+    elif training_config == "007":
+        config = agent_007
     else:
         raise ValueError(f"Invalid RUN_ID: {training_config}")
 

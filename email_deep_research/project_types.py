@@ -18,5 +18,6 @@ class ProjectPolicyConfig(BaseModel):
     reward_extra_turns: bool = True
     log_to_openpipe: bool = False
     litellm_model_name: str | None = None
+    use_tools: bool = False
 
     training_config: TrainingConfig | None = None

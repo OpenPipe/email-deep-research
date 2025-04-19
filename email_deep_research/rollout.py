@@ -12,7 +12,7 @@ from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
-from litellm.types.utils import Choices, ModelResponse
+from litellm.types.utils import Choices, ModelResponse, Message
 from dataclasses import asdict
 from email_deep_research.utils import convert_litellm_choice_to_openai
 from dataclasses import dataclass
@@ -21,9 +21,12 @@ from tqdm.asyncio import tqdm
 import os
 from openpipe import AsyncOpenPipe
 from datetime import datetime
-from project_types import ProjectPolicyConfig
+from email_deep_research.project_types import ProjectPolicyConfig
+import textwrap
+from tenacity import retry, stop_after_attempt
 
 litellm.cache = Cache(type=LiteLLMCacheType.DISK)
+# litellm._turn_on_debug()
 
 # Initialize OpenPipe client (ensure OPENPIPE_API_KEY is in your .env)
 if os.getenv("OPENPIPE_API_KEY"):
@@ -63,7 +66,7 @@ class FinalRubric:
 
 
 def reward_and_metrics(
-    policy_config: ProjectPolicyConfig, rubric: FinalRubric
+    policy_config: ProjectPolicyConfig, rubric: FinalRubric, traj: Trajectory
 ) -> tuple[float, dict]:
     metrics = rubric.to_metrics()
 
@@ -106,11 +109,12 @@ def reward_and_metrics(
         # Extra credit for not including extra sources.
         reward += 0.1 / rubric.num_sources if rubric.num_sources > 0 else 0
 
-        # Extra credit for being faster.
-        reward += 0.1 * rubric.num_turns / policy_config.max_turns
+        # Extra credit for being faster (taking fewer turns).
+        reward += 0.1 * (1 - rubric.num_turns / policy_config.max_turns)
         return reward, metrics
 
-    print(rubric)
+    traj.logs.append(f"Rubric: {rubric}")
+    traj.logs.append("Rubric not handled properly")
     raise ValueError("Rubric is not handled properly")
 
 
@@ -129,11 +133,27 @@ def return_final_answer(answer: str, sources: List[str] | None) -> str:
     ...
 
 
-def tool_response(response: Any) -> ChatCompletionMessageParam:
-    return {
-        "role": "user",
-        "content": json.dumps(response),
-    }
+def tool_response(response: Any, message: Message) -> ChatCompletionMessageParam:
+    """Generate a response for a tool call.
+
+    Args:
+        response: The response from the tool
+        message: The message that's being responded to
+
+    Returns:
+        A message that can be added to the conversation
+    """
+    if message.tool_calls:
+        return {
+            "role": "tool",
+            "tool_call_id": message.tool_calls[0].id,
+            "content": json.dumps(response),
+        }
+    else:
+        return {
+            "role": "user",
+            "content": json.dumps(response),
+        }
 
 
 tools: list[ChatCompletionToolParam] = [
@@ -143,18 +163,7 @@ tools: list[ChatCompletionToolParam] = [
 ]  # type: ignore
 
 
-def to_messages(
-    messages_and_choices: MessagesAndChoices,
-) -> list[ChatCompletionMessageParam]:
-    messages = []
-    for message in messages_and_choices:
-        if isinstance(message, Choice):
-            messages.append(message.message.to_dict())
-        else:
-            messages.append(message)
-    return messages
-
-
+@retry(stop=stop_after_attempt(3))
 async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> bool:
     system_prompt = "You will be given an question and two different answers to the question, the correct answer and the answer given by an AI. Your job is to determine if the answer given by the AI is correct. Return True if the answer is semantically similar to the correct answer, and False otherwise. Return only the word True or False, no other text."
 
@@ -177,6 +186,7 @@ async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> 
     return response.choices[0].message.content.strip().lower().startswith("t")  # type: ignore
 
 
+@retry(stop=stop_after_attempt(3))
 @limit_concurrency(10, derive_key=lambda model, scenario, **kwargs: model.name)
 async def rollout(
     model: art.Model,
@@ -191,26 +201,34 @@ async def rollout(
     )
     assert isinstance(model.config, ProjectPolicyConfig)
 
-    system_prompt = f"""You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {model.config.max_turns} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
-    
-    Here are the tools you can use:
-    {tools}
-    
-    Respond with a valid JSON object with the following fields:
-    - tool_name: (str) the name of the tool to use
-    - tool_args: (JSON) the arguments to pass to the tool
+    system_prompt = textwrap.dedent(f"""\
+        You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {model.config.max_turns} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
 
-    For example, to read a specific email, you should respond with:
-    {{
-        "tool_name": "read_email",
-        "tool_args": {{
-            "message_id": "<12635597.1075855702772.JavaMail.evans@thyme>"
-        }}
-    }}
+        User's email address is {scenario.inbox_address}
+        Today's date is {scenario.query_date}
+    """)
 
-    User's email address is {scenario.inbox_address}
-    Today's date is {scenario.query_date}
-    """
+    if model.config.use_tools:
+        traj.tools = tools
+    else:
+        system_prompt += textwrap.dedent(f"""\
+            
+            Here are the tools you can use:
+            {tools}
+            
+            Respond with a valid JSON object with the following fields:
+            - tool_name: (str) the name of the tool to use
+            - tool_args: (JSON) the arguments to pass to the tool
+
+            For example, to read a specific email, you should respond with:
+            {{
+                "tool_name": "read_email",
+                "tool_args": {{
+                    "message_id": "<12635597.1075855702772.JavaMail.evans@thyme>"
+                }}
+            }}
+        """)
+
     traj.messages_and_choices = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": scenario.question},
@@ -232,53 +250,75 @@ async def rollout(
         llm_response = await acompletion(
             model=litellm_model_name,
             base_url=model.base_url,
-            messages=to_messages(traj.messages_and_choices),
+            messages=traj.messages(),
             caching=not model.trainable,
             api_key=model.api_key,
-            max_tokens=model.config.max_tokens,
+            max_completion_tokens=model.config.max_tokens,
+            tools=tools if model.config.use_tools else None,
         )  # type: ignore
 
         choice = llm_response.choices[0]  # type: ignore
         assert isinstance(choice, Choices)
+
+        # Our rollout is only set up to handle one tool call at a time, so just ignore any parallel tool calls.
+        if choice.message.tool_calls is not None and len(choice.message.tool_calls) > 1:
+            choice.message.tool_calls = choice.message.tool_calls[:1]
         if model.trainable:
             traj.messages_and_choices.append(convert_litellm_choice_to_openai(choice))
         else:
             traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
-        raw_content = choice.message.content
-        assert raw_content is not None
-        start_index = raw_content.find("{")
-        end_index = raw_content.rfind("}")
-        if not (start_index != -1 and end_index != -1 and start_index < end_index):
-            rubric.cant_parse_tool_call = True
-            break
-        json_str = raw_content[start_index : end_index + 1]
 
-        try:
-            tool_call = json.loads(json_str)
-        except Exception as e:
-            traj.logs.append(f"Error parsing tool call: {e}")
-            rubric.cant_parse_tool_call = True
-            break
+        if model.config.use_tools:
+            tool_call = (
+                choice.message.tool_calls[0].get("function")
+                if choice.message.tool_calls
+                else None
+            )
+            if tool_call is None:
+                rubric.bad_tool_call_args = True
+                break
+            tool_name = tool_call["name"]
+            try:
+                tool_args = json.loads(tool_call["arguments"])
+            except Exception as e:
+                rubric.bad_tool_call_args = True
+                break
+        else:
+            raw_content = choice.message.content
+            assert raw_content is not None
+            start_index = raw_content.find("{")
+            end_index = raw_content.rfind("}")
+            if not (start_index != -1 and end_index != -1 and start_index < end_index):
+                rubric.cant_parse_tool_call = True
+                break
+            json_str = raw_content[start_index : end_index + 1]
 
-        if "tool_args" not in tool_call:
-            rubric.bad_tool_call_args = True
-            traj.logs.append(f"Tool call missing tool_args: {tool_call}")
-            break
+            try:
+                tool_call = json.loads(json_str)
+            except Exception as e:
+                traj.logs.append(f"Error parsing tool call: {e}")
+                rubric.cant_parse_tool_call = True
+                break
 
-        match tool_call.get("tool_name"):
+            if "tool_args" not in tool_call:
+                rubric.bad_tool_call_args = True
+                traj.logs.append(f"Tool call missing tool_args: {tool_call}")
+                break
+            tool_name = tool_call.get("tool_name")
+            tool_args = tool_call.get("tool_args")
+
+        match tool_name:
             case "search_emails":
                 try:
                     search_results = search_emails(
+                        **tool_args,
                         inbox=scenario.inbox_address,
-                        keywords=tool_call["tool_args"].get("keywords"),
-                        from_addr=tool_call["tool_args"].get("from_addr"),
-                        to_addr=tool_call["tool_args"].get("to_addr"),
-                        sent_after=tool_call["tool_args"].get("sent_after"),
-                        sent_before=tool_call["tool_args"].get("sent_before"),
-                        max_results=tool_call["tool_args"].get("max_results"),
                     )
                     traj.messages_and_choices.append(
-                        tool_response([asdict(r) for r in search_results])
+                        tool_response(
+                            [asdict(r) for r in search_results],
+                            choice.message,
+                        )
                     )
                     for r in search_results:
                         if r.message_id == scenario.message_ids[0]:
@@ -288,22 +328,22 @@ async def rollout(
                     traj.logs.append(f"Error searching emails: {e}")
                     break
             case "read_email":
-                message_id_to_read = tool_call["tool_args"].get("message_id")
+                message_id_to_read = tool_args.get("message_id")
                 if message_id_to_read == scenario.message_ids[0]:
                     rubric.ever_read_right_email = True
                 email_content = read_email(message_id_to_read)
                 if email_content is None:
                     traj.messages_and_choices.append(
-                        tool_response({"error": "Email not found"})
+                        tool_response({"error": "Email not found"}, choice.message)
                     )
                     rubric.ever_tried_to_read_invalid_email = True
                 else:
                     traj.messages_and_choices.append(
-                        tool_response(email_content.model_dump())
+                        tool_response(email_content.model_dump(), choice.message)
                     )
             case "return_final_answer":
-                final_answer = tool_call["tool_args"].get("answer")
-                final_sources = tool_call["tool_args"].get("sources")
+                final_answer = tool_args.get("answer")
+                final_sources = tool_args.get("sources")
 
                 if (
                     final_answer is None
@@ -326,7 +366,7 @@ async def rollout(
                 rubric.bad_tool_call_name = True
                 break
 
-    reward, metrics = reward_and_metrics(model.config, rubric)
+    reward, metrics = reward_and_metrics(model.config, rubric, traj)
     traj.reward = reward
     traj.metrics = metrics
     rollout_end_time = datetime.now()  # Record end time
@@ -338,7 +378,7 @@ async def rollout(
                 received_at=rollout_end_time.timestamp() * 1000,
                 req_payload={
                     "model": model.name,
-                    "messages": to_messages(traj.messages_and_choices)[:-1],
+                    "messages": traj.messages()[:-1],
                     "metadata": {
                         "type": "enron_rollout_final",
                         "reward": str(traj.reward),
@@ -355,45 +395,26 @@ async def rollout(
     return traj
 
 
-async def benchmark_model(model: art.Model, limit: int = 10) -> list[Trajectory]:
-    import polars as pl
-    from email_deep_research.query_iterators import load_synthetic_queries
-
-    scenarios = load_synthetic_queries(split="test", limit=limit)
-    trajectories = await tqdm.gather(
-        *[rollout(model, scenario) for scenario in scenarios],
-        desc=f"Benchmarking {model.name}",
-    )
-
-    metrics = pl.DataFrame(
-        [t.metrics for t in trajectories],
-    )
-    # Compute mean for each column (averaging the metrics)
-    avg_metrics = metrics.select(
-        [pl.mean(c).alias(c) for c in metrics.columns]
-    ).transpose(include_header=True)
-    print(f"Averaged Metrics for model {model.name}:")
-    print(avg_metrics.to_pandas().to_markdown())
-    print(f"Trajectory")
-    print(trajectories[0].for_logging())
-
-    return trajectories
-
-
 if __name__ == "__main__":
     from email_deep_research.query_iterators import load_synthetic_queries
     from dotenv import load_dotenv
+    import asyncio
+    import yaml
 
     load_dotenv()
 
-    import asyncio
-
-    asyncio.run(
-        benchmark_model(
+    traj = asyncio.run(
+        rollout(
             art.Model(
-                name="openai/gpt-4o",
+                name="gpt-4o",
                 project="email_agent",
-                config=ProjectPolicyConfig(log_to_openpipe=False),
-            )
+                config=ProjectPolicyConfig(
+                    log_to_openpipe=False,
+                    litellm_model_name="openai/gpt-4o",
+                    use_tools=True,
+                ),
+            ),
+            load_synthetic_queries(split="test", limit=1)[0],
         )
     )
+    print(yaml.dump(traj.for_logging()))

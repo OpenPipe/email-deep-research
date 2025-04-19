@@ -1,2 +1,0 @@
-[console_scripts]
-benchmark-prompted-models = email_deep_research.scripts.benchmark_prompted_models:main
