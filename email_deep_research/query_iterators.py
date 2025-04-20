@@ -7,6 +7,11 @@ import random
 # Define the Hugging Face repository ID
 HF_REPO_ID = "corbt/enron_emails_sample_questions"
 
+# A few spot-checked synthetic queries that we found to be ambiguous or
+# contradicted by other source emails. We'll exclude them for a more accurate
+# model.
+bad_queries = [49, 101, 129, 171, 208, 327]
+
 
 def load_synthetic_queries(
     split: str = "train",
@@ -18,6 +23,8 @@ def load_synthetic_queries(
 
     if max_messages is not None:
         dataset = dataset.filter(lambda x: len(x["message_ids"]) <= max_messages)
+
+    dataset = dataset.filter(lambda x: x["id"] not in bad_queries)
 
     if shuffle:
         dataset = dataset.shuffle()

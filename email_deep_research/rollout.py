@@ -72,10 +72,6 @@ def reward_and_metrics(
 
     # Note: make sure all possible partial rewards always sum to less than 0.5.
     partial_rewards = 0
-    if policy_config.reward_extra_turns:
-        partial_rewards += (
-            (rubric.num_turns / policy_config.max_turns) / 10
-        )  # You get up to 0.1 points for running through the turn limit instead of giving up early
     partial_rewards += 0.1 if rubric.ever_found_right_email else 0
     partial_rewards += 0.1 if rubric.ever_read_right_email else 0
     partial_rewards += 0.1 if not rubric.ever_tried_to_read_invalid_email else 0
@@ -197,7 +193,7 @@ async def rollout(
     traj = Trajectory(
         messages_and_choices=[],
         reward=0,
-        metadata={"email_inbox": scenario.inbox_address},
+        metadata={"email_inbox": scenario.inbox_address, "scenario_id": scenario.id},
     )
     assert isinstance(model.config, ProjectPolicyConfig)
 
@@ -280,12 +276,15 @@ async def rollout(
             tool_name = tool_call["name"]
             try:
                 tool_args = json.loads(tool_call["arguments"])
+                assert isinstance(tool_args, dict)
             except Exception as e:
                 rubric.bad_tool_call_args = True
                 break
         else:
             raw_content = choice.message.content
-            assert raw_content is not None
+            if raw_content is None:
+                rubric.cant_parse_tool_call = True
+                break
             start_index = raw_content.find("{")
             end_index = raw_content.rfind("}")
             if not (start_index != -1 and end_index != -1 and start_index < end_index):

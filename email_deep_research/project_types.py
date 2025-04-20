@@ -8,16 +8,14 @@ class TrainingConfig(BaseModel):
     eval_steps: int = 30
     val_set_size: int = 100
     training_dataset_size: int = 4000
-    batch_size: int = 8
     num_epochs: int = 4
 
 
 class ProjectPolicyConfig(BaseModel):
     max_turns: int = 10
     max_tokens: int = 2048
-    reward_extra_turns: bool = True
     log_to_openpipe: bool = False
     litellm_model_name: str | None = None
-    use_tools: bool = False
+    use_tools: bool = True
 
     training_config: TrainingConfig | None = None

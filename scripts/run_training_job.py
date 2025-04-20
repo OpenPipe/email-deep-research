@@ -1,61 +1,47 @@
 import argparse
-import subprocess
+import os
 import sys
+from pathlib import Path
+from typing import Dict
+
+import sky
 
 # Usage:
 # uv run scripts/run_training_job.py 002 --fast
 
 
-def run_command(command, shell=False):
-    """Helper function to run a shell command and print output."""
-    print(
-        f"Running command: {' '.join(command) if isinstance(command, list) else command}"
-    )
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            shell=shell,  # Use shell=True if command is a string
-            bufsize=1,  # Line buffered
-            universal_newlines=True,
-        )
-        # Stream output
-        if process.stdout:
-            for line in process.stdout:
-                print(line, end="")
-        process.wait()
-        if process.returncode != 0:
-            print(
-                f"Command failed with exit code {process.returncode}", file=sys.stderr
-            )
-            # Optionally exit here if needed: sys.exit(process.returncode)
-        return process.returncode
-    except FileNotFoundError:
-        print(
-            f"Error: Command not found: {command[0] if isinstance(command, list) else command.split()[0]}",
-            file=sys.stderr,
-        )
-        print(
-            "Please ensure 'sky' and 'uv' are installed and in your PATH.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except Exception as e:
-        print(f"An error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+def load_env_file(env_path: str) -> Dict[str, str]:
+    """Load a simple dotenv style file (KEY=VALUE per line)."""
+    envs: Dict[str, str] = {}
+    path = Path(env_path)
+    if not path.exists():
+        print(f"Warning: env file {env_path} does not exist – continuing without it.")
+        return envs
+
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue  # skip malformed lines
+            key, val = line.split("=", 1)
+            envs[key.strip()] = val.strip()
+    return envs
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Launch a SkyPilot training job for email agent."
+        description="Launch a SkyPilot training job for email agent using the Python SDK.)",
     )
     parser.add_argument(
-        "run_id", help="The identifier for this training run (e.g., '002', '3')."
+        "run_id",
+        help="The identifier for this training run (e.g., '002', '3').",
     )
     parser.add_argument(
-        "--fast", action="store_true", help="Include the --fast flag for sky launch."
+        "--fast",
+        action="store_true",
+        help="Use the --fast flag for sky.launch (skip provisioning if cluster is already up).",
     )
     parser.add_argument(
         "--env-file",
@@ -63,24 +49,27 @@ def main():
         help="Path to the environment file (default: .env).",
     )
     parser.add_argument(
-        "--skypilot-yaml",
-        default="skypilot.yaml",
-        help="Path to the SkyPilot YAML file (default: skypilot.yaml).",
-    )
-    parser.add_argument(
         "--idle-minutes",
         type=int,
         default=60,
         help="Idle minutes before autostop (default: 60).",
     )
+    parser.add_argument(
+        "--accelerator",
+        default="H100-SXM:1",
+        help=(
+            "Accelerator specification in the format '<TYPE>:<COUNT>' to pass to SkyPilot. "
+            "Examples: 'A100-80GB:2', 'T4:1'. Default: 'H100-SXM:1'. If the count is omitted, "
+            "it defaults to 1 (e.g., 'A100' == 'A100:1')."
+        ),
+    )
 
     args = parser.parse_args()
 
-    # --- Construct Cluster Name and Format Run ID ---
+    # --- Construct Cluster Name and Format RUN_ID ---
     try:
-        # Ensure run_id can be treated as an integer for formatting, but keep original for cluster name if needed
         run_id_int = int(args.run_id)
-        formatted_run_id = f"{run_id_int:03d}"  # Pad with leading zeros to 3 digits
+        formatted_run_id = f"{run_id_int:03d}"
     except ValueError:
         print(
             f"Error: run_id '{args.run_id}' must be an integer or convertible to one.",
@@ -88,47 +77,103 @@ def main():
         )
         sys.exit(1)
 
-    cluster_name = f"kyle-email-agent-{args.run_id}"  # Use original run_id for name consistency if desired
+    cluster_name = f"kyle-email-agent-{args.run_id}"
 
-    # --- Attempt to Cancel Existing Cluster ---
-    print(f"Attempting to cancel existing cluster: {cluster_name}")
-    cancel_command = ["sky", "cancel", cluster_name, "--yes"]
-    # We don't exit if cancel fails, as the cluster might not exist
-    run_command(cancel_command)
+    # --- Define Task Inline ---
+    setup_script = """
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 
-    # --- Construct Launch Command ---
-    print(
-        f"Constructing launch command for cluster: {cluster_name} with RUN_ID={formatted_run_id}"
+    source $HOME/.local/bin/env
+
+    uv remove openpipe-art
+    uv add --editable ~/ART
+    uv add awscli
+    uv sync
+    """
+
+    run_script = (
+        'echo "Running training script..."\nuv run python email_deep_research/train.py'
     )
-    launch_command_list = [
-        "uv",
-        "run",
-        "sky",
-        "launch",
-        args.skypilot_yaml,
-        "--env-file",
-        args.env_file,
-        "--yes",
-        "--retry-until-up",
-        "--down",
-        f"--idle-minutes-to-autostop={args.idle_minutes}",
-        f"--cluster={cluster_name}",
-        "--env",
-        f"RUN_ID={formatted_run_id}",
-    ]
 
-    if args.fast:
-        launch_command_list.append("--fast")
+    # Base env skeleton matching the original YAML (values will be filled from env file)
+    base_envs = {
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "WANDB_API_KEY": "",
+        "OPENPIPE_API_KEY": "",
+        "RUN_ID": "",
+        "AWS_ACCESS_KEY_ID": "",
+        "AWS_SECRET_ACCESS_KEY": "",
+        "AWS_REGION": "",
+        "BACKUP_BUCKET": "",
+    }
 
-    # --- Execute Launch Command ---
-    print(f"\nLaunching new cluster: {cluster_name}")
-    launch_return_code = run_command(launch_command_list)
+    task = sky.Task(
+        workdir=".",
+        setup=setup_script,
+        run=run_script,
+        envs=base_envs,
+    )
 
-    if launch_return_code == 0:
+    # --- Configure Resources ---
+
+    def _parse_accelerator(spec: str) -> Dict[str, int]:
+        """Parse an accelerator spec of the form 'TYPE:COUNT' (COUNT optional)."""
+        if ":" in spec:
+            name, count_str = spec.split(":", 1)
+            try:
+                count = int(count_str)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid accelerator count in spec '{spec}'. Must be an int."
+                ) from exc
+        else:
+            name, count = spec, 1
+        return {name: count}
+
+    acc_dict = _parse_accelerator(args.accelerator)
+
+    task.set_resources(sky.Resources(accelerators=acc_dict))
+
+    # File mounts
+    task.set_file_mounts({"~/ART": "../ART"})
+
+    # --- Prepare environment variables ---
+    envs: Dict[str, str] = load_env_file(args.env_file)
+    envs["RUN_ID"] = formatted_run_id
+    task.update_envs(envs)
+
+    # --- Attempt to cancel existing jobs on cluster (if any) ---
+    try:
+        pending_jobs = sky.queue(cluster_name)  # type: ignore[attr-defined]
+        if pending_jobs:
+            print(f"Found existing jobs on {cluster_name}, cancelling...")
+            # Cancel all jobs for current user on this cluster
+            sky.cancel(cluster_name, all=True)  # type: ignore[attr-defined]
+    except Exception:
+        # Either the cluster does not exist yet or queue/cancel failed; ignore.
+        pass
+
+    # --- Launch the task ---
+    print(
+        f"Launching cluster '{cluster_name}' with RUN_ID={formatted_run_id} (fast={args.fast})"
+    )
+
+    try:
+        request_id = sky.launch(
+            task,
+            cluster_name=cluster_name,
+            retry_until_up=True,
+            idle_minutes_to_autostop=args.idle_minutes,
+            down=True,
+            fast=args.fast,
+        )
+
+        # Stream logs until completion and get result (blocking).
+        sky.stream_and_get(request_id)  # type: ignore[attr-defined]
         print("\nJob launched successfully.")
-    else:
-        print("\nJob launch failed.")
-        sys.exit(launch_return_code)
+    except Exception as e:
+        print(f"\nJob launch failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -4,10 +4,7 @@
 import art
 import asyncio
 import polars as pl
-from tqdm.asyncio import tqdm
 from dotenv import load_dotenv
-from email_deep_research.query_iterators import load_synthetic_queries
-from email_deep_research.rollout import rollout
 from email_deep_research.local_email_db import generate_database
 from email_deep_research.project_types import ProjectPolicyConfig
 from email_deep_research.benchmark import benchmark_model
@@ -17,12 +14,12 @@ load_dotenv()
 generate_database()
 
 MODELS_TO_BENCHMARK = [
-    # "openai/gpt-4o",
-    "openai/gpt-4.1",
-    # "openai/o4-mini",
-    # "openai/o3",
-    # "gemini/gemini-2.0-flash",
-    # "gemini/gemini-2.5-pro-preview-03-25",
+    ("gpt-4o", "openai/gpt-4o", False),
+    ("gpt-4.1", "openai/gpt-4.1", False),
+    ("o4-mini", "openai/o4-mini", True),
+    ("o3", "openai/o3", True),
+    ("gemini-2.0-flash", "gemini/gemini-2.0-flash", False),
+    ("gemini-2.5-pro", "gemini/gemini-2.5-pro-preview-03-25", False),
 ]
 
 TEST_SET_ENTRIES = 100
@@ -30,22 +27,28 @@ TEST_SET_ENTRIES = 100
 
 async def main():
     api = art.LocalAPI()
-    models = [
-        art.Model(
-            name=model_name,
-            project="email-deep-research",
-            config=ProjectPolicyConfig(litellm_model_name=model_name, use_tools=True),
+    models = []
+    for model_name, model_id, use_tools in MODELS_TO_BENCHMARK:
+        model = art.Model(
+            name=model_name.split("/")[-1],
+            project="email_agent",
+            config=ProjectPolicyConfig(
+                litellm_model_name=model_id, use_tools=use_tools
+            ),
         )
-        for model_name in MODELS_TO_BENCHMARK
-    ]
-    for model in models:
         await model.register(api)
+        models.append(model)
+
     results = await asyncio.gather(
-        *[benchmark_model(model, TEST_SET_ENTRIES) for model in models]
+        *[
+            benchmark_model(model, TEST_SET_ENTRIES, swallow_exceptions=False)
+            for model in models
+        ]
     )
     for model in models:
-        await model.push_to_s3(
-            os.environ["BACKUP_BUCKET"],
+        await api._experimental_push_to_s3(
+            model,
+            s3_bucket=os.environ["BACKUP_BUCKET"],
         )
 
     df: pl.DataFrame = pl.concat(results)
@@ -53,7 +56,7 @@ async def main():
 
     col_names = {"column": "metric"}
     for i, model in enumerate(MODELS_TO_BENCHMARK):
-        col_names[f"column_{i}"] = model
+        col_names[f"column_{i}"] = model[0]
 
     df = df.rename(col_names)
     with open("data/benchmark_prompted_models.html", "w") as f:

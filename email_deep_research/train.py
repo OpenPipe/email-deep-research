@@ -21,13 +21,12 @@ agent_002 = art.TrainableModel(
         log_to_openpipe=True,
         training_config=TrainingConfig(
             trajectories_per_group=6,
-            groups_per_step=1,
+            groups_per_step=8,
             learning_rate=1.2e-5,
             eval_steps=30,
             val_set_size=100,
             training_dataset_size=4000,
-            batch_size=8,
-            num_epochs=4,
+            num_epochs=1,
         ),
     ),
 )
@@ -40,7 +39,6 @@ agent_004.config.max_turns = 30
 agent_005 = agent_002.model_copy(deep=True)
 assert isinstance(agent_005.config, ProjectPolicyConfig)
 agent_005.name = "email-agent-005"
-agent_005.config.reward_extra_turns = False
 
 agent_006 = agent_005.model_copy(deep=True)
 agent_006.name = "email-agent-006"
@@ -49,6 +47,20 @@ agent_007 = agent_005.model_copy(deep=True)
 agent_007.name = "email-agent-007"
 assert isinstance(agent_007.config, ProjectPolicyConfig)
 agent_007.config.use_tools = True
+
+agent_008 = agent_005.model_copy(deep=True)
+agent_008.name = "email-agent-008"
+assert isinstance(agent_008.config, ProjectPolicyConfig)
+assert agent_008.config.training_config is not None
+agent_008.config.use_tools = True
+agent_008.config.training_config.trajectories_per_group = 4
+agent_008.config.training_config.groups_per_step = 12
+agent_008.config.training_config.num_epochs = 2
+
+agent_009 = agent_008.model_copy(deep=True)
+agent_009.name = "email-agent-009"
+assert isinstance(agent_009.config, ProjectPolicyConfig)
+agent_009.base_model = "Qwen/Qwen2.5-32B-Instruct"
 
 
 async def run_training(model: art.TrainableModel):
@@ -59,8 +71,11 @@ async def run_training(model: art.TrainableModel):
         raise ValueError("Training config is not set")
     api = art.LocalAPI()
     await model.register(api)
-    await model.pull_from_s3(
-        os.environ["BACKUP_BUCKET"],
+    print(f"Pulling from S3 bucket: `{os.environ['BACKUP_BUCKET']}`")
+    await api._experimental_pull_from_s3(
+        model,
+        s3_bucket=os.environ["BACKUP_BUCKET"],
+        verbose=True,
     )
 
     print("Loading training data...")
@@ -77,7 +92,8 @@ async def run_training(model: art.TrainableModel):
 
     train_iterator = iterate_dataset(
         train_scenarios,
-        batch_size=model.config.training_config.batch_size,
+        groups_per_step=model.config.training_config.groups_per_step,
+        num_epochs=model.config.training_config.num_epochs,
         initial_step=await model.get_step(),
     )
 
@@ -86,7 +102,10 @@ async def run_training(model: art.TrainableModel):
             print(f"\n--- Evaluating at Iteration {global_step} ---")
             await benchmark_model(model)
             await model.delete_checkpoints()
-            await model.push_to_s3()
+            await api._experimental_push_to_s3(
+                model,
+                s3_bucket=os.environ["BACKUP_BUCKET"],
+            )
 
         groups = await art.gather_trajectory_groups(
             (
@@ -110,7 +129,10 @@ async def run_training(model: art.TrainableModel):
         )
 
     await benchmark_model(model)
-    await model.push_to_s3()
+    await api._experimental_push_to_s3(
+        model,
+        s3_bucket=os.environ["BACKUP_BUCKET"],
+    )
     print("Training finished.")
 
 
@@ -129,6 +151,10 @@ if __name__ == "__main__":
         config = agent_006
     elif training_config == "007":
         config = agent_007
+    elif training_config == "008":
+        config = agent_008
+    elif training_config == "009":
+        config = agent_009
     else:
         raise ValueError(f"Invalid RUN_ID: {training_config}")
 

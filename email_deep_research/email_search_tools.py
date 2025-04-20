@@ -168,7 +168,7 @@ def read_email(message_id: str) -> Optional[Email]:
 
     # --- Query for Email Core Details ---
     email_sql = """
-        SELECT id, date, subject, from_address, body, file_name
+        SELECT message_id, date, subject, from_address, body, file_name
         FROM emails
         WHERE message_id = ?;
     """
@@ -212,7 +212,7 @@ def read_email(message_id: str) -> Optional[Email]:
 
     # --- Construct Email Object ---
     email_obj = Email(
-        message_id=str(msg_id),  # Convert to string to match Pydantic model
+        message_id=msg_id,  # Convert to string to match Pydantic model
         date=date,
         subject=subject,
         from_address=from_addr,
