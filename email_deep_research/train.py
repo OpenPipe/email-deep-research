@@ -3,15 +3,19 @@ import asyncio
 from dotenv import load_dotenv
 from typing import List
 from rollout import rollout
-from query_iterators import load_synthetic_queries
-from types_enron import SyntheticQuery
-from local_email_db import generate_database
+from email_deep_research.data.query_iterators import load_synthetic_queries
+from email_deep_research.data.types_enron import SyntheticQuery
+from email_deep_research.data.local_email_db import generate_database
 from art.utils import iterate_dataset
 from email_deep_research.project_types import ProjectPolicyConfig, TrainingConfig
-from email_deep_research.benchmark import benchmark_model
+from email_deep_research.evaluate.benchmark import benchmark_model
 
 load_dotenv()
 
+# First, I defined a trainable model. The `ProjectPolicyConfig` contains the
+# specific parameters I varied between runs for this project. They're
+# interpreted in the rollout defined in `rollout.py` and used to control
+# generation.
 agent_002 = art.TrainableModel(
     name="email-agent-002",
     project="email_agent",
@@ -31,6 +35,7 @@ agent_002 = art.TrainableModel(
     ),
 )
 
+# While running experiments,
 agent_004 = agent_002.model_copy(deep=True)
 assert isinstance(agent_004.config, ProjectPolicyConfig)
 agent_004.name = "email-agent-004"
@@ -56,11 +61,6 @@ agent_008.config.use_tools = True
 agent_008.config.training_config.trajectories_per_group = 4
 agent_008.config.training_config.groups_per_step = 12
 agent_008.config.training_config.num_epochs = 2
-
-agent_009 = agent_008.model_copy(deep=True)
-agent_009.name = "email-agent-009"
-assert isinstance(agent_009.config, ProjectPolicyConfig)
-agent_009.base_model = "Qwen/Qwen2.5-32B-Instruct"
 
 
 async def run_training(model: art.TrainableModel):

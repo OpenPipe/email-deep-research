@@ -5,9 +5,9 @@ import art
 import asyncio
 import polars as pl
 from dotenv import load_dotenv
-from email_deep_research.local_email_db import generate_database
+from email_deep_research.data.local_email_db import generate_database
 from email_deep_research.project_types import ProjectPolicyConfig
-from email_deep_research.benchmark import benchmark_model
+from email_deep_research.evaluate.benchmark import benchmark_model
 import os
 
 load_dotenv()

@@ -1208,7 +1208,7 @@ requires-dist = [
     { name = "polars" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
-    { name = "skypilot", extras = ["runpod"], specifier = ">=0.8.1" },
+    { name = "skypilot", extras = ["nebius", "runpod"], specifier = ">=0.8.1" },
     { name = "tabulate", specifier = ">=0.9.0" },
     { name = "tiktoken", specifier = ">=0.9.0" },
     { name = "tqdm", specifier = ">=4.62.0" },

@@ -1,9 +1,7 @@
 import art
 from typing import List, Any
-from email_deep_research.types_enron import SyntheticQuery
+from email_deep_research.data.types_enron import SyntheticQuery
 from art import Trajectory
-from art.types import MessagesAndChoices
-from openai.types.chat.chat_completion import Choice
 from litellm import acompletion
 import litellm
 from email_deep_research.email_search_tools import search_emails, read_email
@@ -14,10 +12,9 @@ from openai.types.chat.chat_completion_message_param import ChatCompletionMessag
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from litellm.types.utils import Choices, ModelResponse, Message
 from dataclasses import asdict
-from email_deep_research.utils import convert_litellm_choice_to_openai
+from art.utils.litellm import convert_litellm_choice_to_openai
 from dataclasses import dataclass
 from art.utils import limit_concurrency
-from tqdm.asyncio import tqdm
 import os
 from openpipe import AsyncOpenPipe
 from datetime import datetime
@@ -328,6 +325,9 @@ async def rollout(
                     break
             case "read_email":
                 message_id_to_read = tool_args.get("message_id")
+                if not isinstance(message_id_to_read, str):
+                    rubric.bad_tool_call_args = True
+                    break
                 if message_id_to_read == scenario.message_ids[0]:
                     rubric.ever_read_right_email = True
                 email_content = read_email(message_id_to_read)

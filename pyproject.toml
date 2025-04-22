@@ -23,7 +23,7 @@ dependencies = [
     "tiktoken>=0.9.0",
     "tqdm>=4.62.0",
     "transformers>=4.50.3",
-    "skypilot[runpod]>=0.8.1",
+    "skypilot[nebius,runpod]>=0.8.1",
     "openpipe==4.49.0",
     "litellm>=1.65.0.post1",
     "ipywidgets>=8.1.6",

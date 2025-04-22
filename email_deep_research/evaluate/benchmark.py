@@ -1,6 +1,6 @@
 import art
 from email_deep_research.rollout import rollout
-from email_deep_research.query_iterators import load_synthetic_queries
+from email_deep_research.data.query_iterators import load_synthetic_queries
 import polars as pl
 
 
