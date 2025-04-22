@@ -430,20 +430,18 @@ fig = graph_metric(
 )
 
 # %%
-from email_deep_research.data.query_iterators import load_synthetic_queries
+from jarvis_mail.data.query_iterators import load_synthetic_queries
 
 scenarios = load_synthetic_queries(
     split="test", limit=100, exclude_known_bad_queries=False
 )
 # %% Let's look at the ones that 008 is still getting wrong
 import importlib
-import email_deep_research.email_search_tools
+import jarvis_mail.email_search_tools
 
-email_deep_research.email_search_tools = importlib.reload(
-    email_deep_research.email_search_tools
-)
+jarvis_mail.email_search_tools = importlib.reload(jarvis_mail.email_search_tools)
 
-from email_deep_research.email_search_tools import read_email
+from jarvis_mail.email_search_tools import read_email
 
 failures = (
     df.filter(pl.col("model") == "email-agent-008")

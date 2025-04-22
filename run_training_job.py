@@ -6,7 +6,7 @@ from typing import Dict
 import sky
 
 # Usage:
-# uv run scripts/run_training_job.py 002 --fast
+# uv run run_training_job.py 002 --fast
 
 
 def load_env_file(env_path: str) -> Dict[str, str]:
@@ -90,9 +90,7 @@ def main():
     uv sync
     """
 
-    run_script = (
-        'echo "Running training script..."\nuv run python email_deep_research/train.py'
-    )
+    run_script = 'echo "Running training script..."\nuv run python jarvis_mail/train.py'
 
     # Base env skeleton matching the original YAML (values will be filled from env file)
     base_envs = {

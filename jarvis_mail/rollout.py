@@ -1,10 +1,10 @@
 import art
 from typing import List, Any
-from email_deep_research.data.types_enron import SyntheticQuery
+from jarvis_mail.data.types_enron import SyntheticQuery
 from art import Trajectory
 from litellm import acompletion
 import litellm
-from email_deep_research.email_search_tools import search_emails, read_email
+from jarvis_mail.email_search_tools import search_emails, read_email
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
@@ -18,7 +18,7 @@ from art.utils import limit_concurrency
 import os
 from openpipe import AsyncOpenPipe
 from datetime import datetime
-from email_deep_research.project_types import ProjectPolicyConfig
+from jarvis_mail.project_types import ProjectPolicyConfig
 import textwrap
 from tenacity import retry, stop_after_attempt
 
@@ -395,7 +395,7 @@ async def rollout(
 
 
 if __name__ == "__main__":
-    from email_deep_research.query_iterators import load_synthetic_queries
+    from jarvis_mail.query_iterators import load_synthetic_queries
     from dotenv import load_dotenv
     import asyncio
     import yaml

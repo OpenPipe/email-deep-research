@@ -1,5 +1,5 @@
 [project]
-name = "email-deep-research"
+name = "jarvis-mail"
 version = "0.1.0"
 description = "Deep learning research for email search and processing"
 readme = "README.md"

@@ -3,8 +3,8 @@ import logging
 from typing import List, Optional
 from dataclasses import dataclass
 
-from email_deep_research.data.local_email_db import DEFAULT_DB_PATH
-from email_deep_research.data.types_enron import Email
+from jarvis_mail.data.local_email_db import DEFAULT_DB_PATH
+from jarvis_mail.data.types_enron import Email
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

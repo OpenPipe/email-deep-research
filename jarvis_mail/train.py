@@ -3,12 +3,12 @@ import asyncio
 from dotenv import load_dotenv
 from typing import List
 from rollout import rollout
-from email_deep_research.data.query_iterators import load_synthetic_queries
-from email_deep_research.data.types_enron import SyntheticQuery
-from email_deep_research.data.local_email_db import generate_database
+from jarvis_mail.data.query_iterators import load_synthetic_queries
+from jarvis_mail.data.types_enron import SyntheticQuery
+from jarvis_mail.data.local_email_db import generate_database
 from art.utils import iterate_dataset
-from email_deep_research.project_types import ProjectPolicyConfig, TrainingConfig
-from email_deep_research.evaluate.benchmark import benchmark_model
+from jarvis_mail.project_types import ProjectPolicyConfig, TrainingConfig
+from jarvis_mail.evaluate.benchmark import benchmark_model
 
 load_dotenv()
 
