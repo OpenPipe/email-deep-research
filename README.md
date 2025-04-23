@@ -1,4 +1,4 @@
-# JARVIS.mail
+# Art•E(mail)
 
 ## Project Overview
 

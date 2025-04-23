@@ -3,12 +3,12 @@ import asyncio
 from dotenv import load_dotenv
 from typing import List
 from rollout import rollout
-from jarvis_mail.data.query_iterators import load_synthetic_queries
-from jarvis_mail.data.types_enron import SyntheticQuery
-from jarvis_mail.data.local_email_db import generate_database
+from art_email.data.query_iterators import load_synthetic_queries
+from art_email.data.types_enron import SyntheticQuery
+from art_email.data.local_email_db import generate_database
 from art.utils import iterate_dataset
-from jarvis_mail.project_types import ProjectPolicyConfig, TrainingConfig
-from jarvis_mail.evaluate.benchmark import benchmark_model
+from art_email.project_types import ProjectPolicyConfig, TrainingConfig
+from art_email.evaluate.benchmark import benchmark_model
 
 load_dotenv()
 
@@ -61,6 +61,10 @@ agent_008.config.use_tools = True
 agent_008.config.training_config.trajectories_per_group = 4
 agent_008.config.training_config.groups_per_step = 12
 agent_008.config.training_config.num_epochs = 2
+
+agent_011 = agent_008.model_copy(deep=True)
+agent_011.name = "email-agent-011"
+assert isinstance(agent_011.config, ProjectPolicyConfig)
 
 
 async def run_training(model: art.TrainableModel):
@@ -153,8 +157,8 @@ if __name__ == "__main__":
         config = agent_007
     elif training_config == "008":
         config = agent_008
-    elif training_config == "009":
-        config = agent_009
+    elif training_config == "011":
+        config = agent_011
     else:
         raise ValueError(f"Invalid RUN_ID: {training_config}")
 

@@ -148,7 +148,7 @@ def load_trajectories(project_path: str, debug: bool = False) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=schema)
 
 
-df = load_trajectories("../.art/email_agent", debug=False)
+df = load_trajectories("../../.art/email_agent", debug=False)
 df.head()
 # %%
 
@@ -430,18 +430,16 @@ fig = graph_metric(
 )
 
 # %%
-from jarvis_mail.data.query_iterators import load_synthetic_queries
+from art_email.data.query_iterators import load_synthetic_queries
 
 scenarios = load_synthetic_queries(
     split="test", limit=100, exclude_known_bad_queries=False
 )
 # %% Let's look at the ones that 008 is still getting wrong
-import importlib
-import jarvis_mail.email_search_tools
+from art_email.email_search_tools import read_email
+from art_email.data.local_email_db import generate_database
 
-jarvis_mail.email_search_tools = importlib.reload(jarvis_mail.email_search_tools)
-
-from jarvis_mail.email_search_tools import read_email
+generate_database()
 
 failures = (
     df.filter(pl.col("model") == "email-agent-008")

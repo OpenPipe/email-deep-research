@@ -1,6 +1,6 @@
 import art
-from jarvis_mail.rollout import rollout
-from jarvis_mail.data.query_iterators import load_synthetic_queries
+from art_email.rollout import rollout
+from art_email.data.query_iterators import load_synthetic_queries
 import polars as pl
 
 
