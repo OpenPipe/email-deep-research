@@ -90,7 +90,7 @@ def main():
     uv sync
     """
 
-    run_script = 'echo "Running training script..."\nuv run python art_email/train.py'
+    run_script = 'echo "Running training script..."\nuv run python art_e/train.py'
 
     # Base env skeleton matching the original YAML (values will be filled from env file)
     base_envs = {

@@ -1,6 +1,6 @@
 import art
-from art_email.rollout import rollout
-from art_email.data.query_iterators import load_synthetic_queries
+from art_e.rollout import rollout
+from art_e.data.query_iterators import load_synthetic_queries
 import polars as pl
 
 

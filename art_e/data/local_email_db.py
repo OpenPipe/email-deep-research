@@ -8,7 +8,7 @@ from datetime import datetime
 # Resolve paths relative to this file so it works regardless of the current working directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Database will live in "../data/enron_emails.db" relative to project root
-DEFAULT_DB_PATH = os.path.join(BASE_DIR, "..", "data", "enron_emails.db")
+DEFAULT_DB_PATH = os.path.join(BASE_DIR, "..", "..", "data", "enron_emails.db")
 
 DEFAULT_REPO_ID = "corbt/enron-emails"
 

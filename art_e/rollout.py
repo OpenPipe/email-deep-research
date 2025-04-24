@@ -1,10 +1,10 @@
 import art
 from typing import List, Any
-from art_email.data.types_enron import SyntheticQuery
+from art_e.data.types_enron import SyntheticQuery
 from art import Trajectory
 from litellm import acompletion
 import litellm
-from art_email.email_search_tools import search_emails, read_email
+from art_e.email_search_tools import search_emails, read_email
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
@@ -18,7 +18,7 @@ from art.utils import limit_concurrency
 import os
 from openpipe import AsyncOpenPipe
 from datetime import datetime
-from art_email.project_types import ProjectPolicyConfig
+from art_e.project_types import ProjectPolicyConfig
 import textwrap
 from tenacity import retry, stop_after_attempt
 
@@ -44,19 +44,21 @@ search_tool["function"]["parameters"]["required"].remove("inbox")
 
 @dataclass
 class FinalRubric:
+    answer_correct: bool = False
+    sources_correct: bool = False
+    num_turns: int = 0
+    attempted_answer: bool = False
+    ever_found_right_email: bool = False
+    ever_read_right_email: bool = False
     cant_parse_tool_call: bool = False
     bad_tool_call_name: bool = False
     bad_tool_call_args: bool = False
     ran_out_of_turns: bool = False
     returned_i_dont_know: bool = False
-    attempted_answer: bool = False
-    answer_correct: bool = False
-    sources_correct: bool = False
     num_sources: int = 0
-    num_turns: int = 0
-    ever_found_right_email: bool = False
-    ever_read_right_email: bool = False
     ever_tried_to_read_invalid_email: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
     def to_metrics(self) -> dict[str, float | int]:
         return {k: int(v) for k, v in asdict(self).items()}
@@ -179,7 +181,7 @@ async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> 
     return response.choices[0].message.content.strip().lower().startswith("t")  # type: ignore
 
 
-@retry(stop=stop_after_attempt(3))
+# @retry(stop=stop_after_attempt(3))
 @limit_concurrency(10, derive_key=lambda model, scenario, **kwargs: model.name)
 async def rollout(
     model: art.Model,
@@ -248,8 +250,14 @@ async def rollout(
             api_key=model.api_key,
             max_completion_tokens=model.config.max_tokens,
             tools=tools if model.config.use_tools else None,
+            tool_choice="required"
+            if model.config.use_tools and not model.trainable
+            else None,
         )  # type: ignore
 
+        assert isinstance(llm_response, ModelResponse)
+        rubric.prompt_tokens += llm_response.usage.prompt_tokens  # type: ignore
+        rubric.completion_tokens += llm_response.usage.completion_tokens  # type: ignore
         choice = llm_response.choices[0]  # type: ignore
         assert isinstance(choice, Choices)
 
@@ -369,6 +377,9 @@ async def rollout(
     traj.reward = reward
     traj.metrics = metrics
     rollout_end_time = datetime.now()  # Record end time
+    # Compute duration in seconds and add to metrics
+    duration_seconds = (rollout_end_time - rollout_start_time).total_seconds()
+    traj.metrics["duration"] = duration_seconds
 
     if model.config.log_to_openpipe and op_client is not None:
         try:
@@ -395,7 +406,7 @@ async def rollout(
 
 
 if __name__ == "__main__":
-    from art_email.data.query_iterators import load_synthetic_queries
+    from art_e.data.query_iterators import load_synthetic_queries
     from dotenv import load_dotenv
     import asyncio
     import yaml

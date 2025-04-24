@@ -1,4 +1,4 @@
-from art_email.data.types_enron import SyntheticQuery
+from art_e.data.types_enron import SyntheticQuery
 from typing import List, Optional
 from datasets import load_dataset, Dataset
 import random

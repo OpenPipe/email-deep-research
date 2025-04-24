@@ -5,21 +5,22 @@ import art
 import asyncio
 import polars as pl
 from dotenv import load_dotenv
-from art_email.data.local_email_db import generate_database
-from art_email.project_types import ProjectPolicyConfig
-from art_email.evaluate.benchmark import benchmark_model
+from art_e.data.local_email_db import generate_database
+from art_e.project_types import ProjectPolicyConfig
+from art_e.evaluate.benchmark import benchmark_model
 import os
 
 load_dotenv()
 generate_database()
 
 MODELS_TO_BENCHMARK = [
-    ("gpt-4o", "openai/gpt-4o", False),
-    ("gpt-4.1", "openai/gpt-4.1", False),
+    ("gpt-4o", "openai/gpt-4o", True),
+    ("gpt-4.1", "openai/gpt-4.1", True),
     ("o4-mini", "openai/o4-mini", True),
     ("o3", "openai/o3", True),
     ("gemini-2.0-flash", "gemini/gemini-2.0-flash", False),
     ("gemini-2.5-pro", "gemini/gemini-2.5-pro-preview-03-25", False),
+    ("deepseek-r1", "together_ai/deepseek-ai/DeepSeek-R1", False),
 ]
 
 TEST_SET_ENTRIES = 100

@@ -3,8 +3,8 @@ import logging
 from typing import List, Optional
 from dataclasses import dataclass
 
-from art_email.data.local_email_db import DEFAULT_DB_PATH
-from art_email.data.types_enron import Email
+from art_e.data.local_email_db import DEFAULT_DB_PATH
+from art_e.data.types_enron import Email
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -49,7 +49,7 @@ def search_emails(
         to_addr: Optional email address to filter emails sent *to* (inc. cc/bcc).
         sent_after: Optional date string 'YYYY-MM-DD'. Filters for emails sent on or after this date.
         sent_before: Optional date string 'YYYY-MM-DD'. Filters for emails sent before this date.
-        max_results: The maximum number of results to return.
+        max_results: The maximum number of results to return. Cannot exceed 10.
 
     Returns:
         A list of SearchResult objects, each containing 'message_id' and 'snippet'.

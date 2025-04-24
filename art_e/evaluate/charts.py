@@ -1,164 +1,14 @@
 # %%
-
 import polars as pl
-import yaml
-from pathlib import Path
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
-def load_trajectories(project_path: str, debug: bool = False) -> pl.DataFrame:
-    """
-    Load and flatten trajectory YAML files into a Polars DataFrame.
-
-    The expected on‑disk layout is::
-
-        {project_path}/models/{model_name}/trajectories/{split}/{step_number}.yaml
-
-    Each YAML file contains a list of *TrajectoryGroups* (see `art`), and each
-    group in turn contains a list of *Trajectories*.  This helper walks the
-    directory tree, reads every YAML file, and converts every single trajectory
-    into one row of a tabular dataset.
-
-    For every trajectory we record a handful of fixed columns plus two dynamic
-    families of columns:
-
-    Fixed columns
-    -------------
-    model : str
-        Name of the model that produced the trajectory (taken from the folder
-        name under ``models/``).
-    step : int
-        Training / evaluation step extracted from the YAML filename.
-    reward : float | None
-        Reward associated with the trajectory.
-    group_number : int
-        Running counter that uniquely identifies the surrounding trajectory
-        group within the current parsing session (useful for debugging / joins).
-    messages : list[str] | None
-        Raw list of messages & choices for the dialogue.
-    logs : list[str] | None
-        Internal log lines captured during rollout.
-
-    Dynamic columns
-    ---------------
-    metric_* : float
-        One column for every distinct metric key found in the dataset.  Missing
-        values are filled with nulls.
-    metadata_* : str
-        One column for every distinct metadata key (after merging group‑ and
-        trajectory‑level metadata).  Values are coerced to strings so that the
-        resulting table is rectangular.
-
-    Parameters
-    ----------
-    project_path : str
-        Path to the ART project on disk. Typically found in `.art/{project_name}`.
-    debug : bool, optional
-        If *True*, the function prints progress information while parsing.  The
-        default is *False*.
-
-    Returns
-    -------
-    pl.DataFrame
-        A Polars DataFrame containing one row per trajectory with the schema
-        described above.
-    """
-    rows: list[dict] = []
-    metric_cols: set[str] = set()
-    metadata_cols: set[str] = set()
-
-    root = Path(project_path) / "models"
-    group_number = 0
-
-    # Walk through all models and their trajectory files
-    for model_dir in root.iterdir():
-        if debug:
-            print(f"Processing {model_dir}")
-        if not model_dir.is_dir():
-            continue
-        model_name = model_dir.name
-        traj_root = model_dir / "trajectories"
-        if not traj_root.exists():
-            continue
-
-        # Iterate over splits (e.g. train/val)
-        for split_dir in traj_root.iterdir():
-            if not split_dir.is_dir():
-                continue
-
-            for yaml_path in split_dir.glob("*.yaml"):
-                step = int(yaml_path.stem)
-                if debug:
-                    print(f"Processing {yaml_path}")
-
-                # Each YAML file is a list of trajectory groups
-                trajectory_groups = yaml.safe_load(yaml_path.read_text())
-
-                for group in trajectory_groups:
-                    group_number += 1
-                    group_meta = group.get("metadata", {})
-                    for traj in group.get("trajectories", []):
-                        # Merge metadata downward (group metadata < traj metadata wins)
-                        merged_meta = {**group_meta, **traj.get("metadata", {})}
-
-                        metrics = traj.get("metrics", {})
-
-                        prepped_metrics = {f"metric_{k}": v for k, v in metrics.items()}
-                        prepped_metadata = {
-                            f"metadata_{k}": str(v) for k, v in merged_meta.items()
-                        }
-                        metric_cols.update(prepped_metrics.keys())
-                        metadata_cols.update(prepped_metadata.keys())
-                        messages = []
-                        for message in traj.get("messages_and_choices", []):
-                            if "message" in message:
-                                messages.append(
-                                    {**message["message"], "trainable": True}
-                                )
-                            else:
-                                messages.append({**message, "trainable": False})
-
-                        row: dict[str, object] = {
-                            "model": model_name,
-                            "split": split_dir.name,
-                            "step": step,
-                            "reward": traj.get("reward"),
-                            "group_number": group_number,
-                            "messages": messages,
-                            "logs": traj.get("logs"),
-                            **prepped_metrics,
-                            **prepped_metadata,
-                        }
-
-                        rows.append(row)
-
-    schema = (
-        {
-            "model": pl.Utf8,
-            "split": pl.Utf8,
-            "step": pl.Int64,
-            "reward": pl.Float64,
-            "group_number": pl.Int64,
-            "messages": pl.Object,
-            "logs": pl.List(pl.Utf8),
-        }
-        | {k: pl.Float64 for k in metric_cols}
-        | {k: pl.Utf8 for k in metadata_cols}
-    )
-
-    return pl.DataFrame(rows, schema=schema)
-
-
-df = load_trajectories("../../.art/email_agent", debug=False)
-df.head()
-# %%
-
-
-def graph_metric(
+def training_progress_chart(
     df: pl.DataFrame,
     split: str,
     metric_name: str,
-    save_to: str,
-    models: list[str] | None = None,
+    models: list[str | tuple[str, str]] | None = None,
     title: str | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
@@ -172,12 +22,15 @@ def graph_metric(
         Table produced by :func:`load_trajectories`.
     split : str
         Which evaluation split to visualise (e.g. ``"train"`` / ``"val"``).
-    save_to : str
-        Path where the generated plot should be written to (usually a ``.png``
-        or ``.pdf`` file).
-    models : list[str] | None
-        If provided, restrict the chart to the given subset of model names; the
-        legend order will follow the order in this list.
+    models : list[str | tuple[str, str]] | None
+        Optional explicit ordering / subset of model names.  Each element can
+        either be a plain string (``"gpt-4o"``) or a 2‑tuple where the first
+        item is the *internal* model identifier as it appears in *df* and the
+        second item is the *display* name that should be used in the plot
+        (e.g. ``("gemini-2.0-flash", "Gemini 2.0\nFlash")``).  When a tuple is
+        supplied, the function automatically renames the corresponding rows in
+        the DataFrame so that downstream processing and the final legend use
+        the display name.
     title : str | None, optional
         Custom figure title.  If *None* (default) a sensible title will be
         generated automatically.
@@ -200,11 +53,6 @@ def graph_metric(
         The created figure so that it can be displayed inline in IPython /
         Jupyter notebooks.
     """
-    import os
-    from pathlib import Path
-
-    import matplotlib.pyplot as plt
-    import seaborn as sns
 
     plt.rcParams["figure.dpi"] = 300
 
@@ -223,9 +71,39 @@ def graph_metric(
     # Determine plotting / legend order
     # ------------------------------------------------------------------
     if models is not None:
-        # Keep the explicit order provided by the caller; also acts as a filter
-        plot_models = [m for m in models if m in df["model"].unique().to_list()]
-        df = df.filter(pl.col("model").is_in(plot_models))
+        # ------------------------------------------------------------------
+        # Support internal→display name mapping via (internal, display) tuples
+        # ------------------------------------------------------------------
+        internal_names: list[str] = []  # models to keep in the DataFrame
+        display_names: list[str] = []  # names as they should appear in plots
+        rename_pairs: list[tuple[str, str]] = []
+
+        for entry in models:
+            if isinstance(entry, tuple):
+                internal, display = entry
+            else:
+                internal = display = entry  # plain string → same internal/display
+
+            internal_names.append(internal)
+            display_names.append(display)
+
+            if internal != display:
+                rename_pairs.append((internal, display))
+
+        # Restrict to the requested models (internal identifiers)
+        df = df.filter(pl.col("model").is_in(internal_names))
+
+        # Apply renaming so that subsequent logic only sees display names
+        for internal, display in rename_pairs:
+            df = df.with_columns(
+                pl.when(pl.col("model") == internal)
+                .then(pl.lit(display))
+                .otherwise(pl.col("model"))
+                .alias("model")
+            )
+
+        # Preserve caller‑specified order *after* renaming
+        plot_models = display_names
     else:
         # Separate trained models (multiple distinct steps) from comparison
         # models (exactly one step) and list trained models first.
@@ -331,17 +209,29 @@ def graph_metric(
     palette = sns.color_palette(n_colors=len(ordered_for_palette))
     model_colors = {m: c for m, c in zip(ordered_for_palette, palette)}  # type: ignore
 
+    # Track scores of comparison models to adjust linestyle for overlaps
+    plotted_comparison_scores: set[float] = set()
+
     for model in comparison_last + trained_first:
         model_df = agg_df.filter(pl.col("model") == model).sort("step")
         x = model_df["step"].to_list()
         y = model_df[full_metric_col].to_list()
 
         if len(x) == 1:
-            # Prompted comparison model – draw a dashed horizontal line across the full range
+            # Prompted comparison model – draw a horizontal line across the full range
+            score = y[0]
+            linestyle = "--"  # Default to dashed
+
+            # If this score was already plotted by another comparison model, use dotted
+            if score in plotted_comparison_scores:
+                linestyle = ":"
+            else:
+                plotted_comparison_scores.add(score)  # Record this score
+
             ax.plot(
                 [min_step, max_step],
-                [y[0], y[0]],
-                linestyle="--",
+                [score, score],
+                linestyle=linestyle,  # Use determined style
                 linewidth=2,
                 color=model_colors[model],
                 label=model,
@@ -388,118 +278,34 @@ def graph_metric(
     ax.legend(
         handles=ordered_handles,
         labels=ordered_labels,
-        frameon=False,
+        frameon=True,
+        facecolor="white",
         loc="lower right",
-        borderaxespad=0.0,
+        borderaxespad=0.5,
     )
 
     # Remove the top and right spines for a cleaner presentation
     sns.despine()
 
     # ------------------------------------------------------------------
-    # Output handling (save + return)
+    # Output handling (save + return) - Saving is now handled externally
     # ------------------------------------------------------------------
-    save_path = Path(save_to)
-    if save_path.suffix == "":
-        # Default to PNG if no extension given
-        save_path = save_path.with_suffix(".png")
-    os.makedirs(save_path.parent, exist_ok=True)
-    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    # Removed saving logic:
+    # save_path = Path(save_to)
+    # if save_path.suffix == "":
+    #     # Default to PNG if no extension given
+    #     save_path = save_path.with_suffix(".png")
+    # os.makedirs(save_path.parent, exist_ok=True)
+    # fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
     return fig
 
 
-# Set higher resolution for matplotlib display in notebook
-
-fig = graph_metric(
-    df.filter(pl.col("step").ne(592)).with_columns(
-        pl.col("model").str.replace("email-agent-008", "qwen-2.5-14b (trained)")
-    ),
-    "val",
-    "answer_correct",
-    "plots/accuracy_train.png",
-    models=[
-        "qwen-2.5-14b (trained)",
-        "o4-mini",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gpt-4o",
-    ],
-    title="Email Agent Success Rate",
-    perfect_score=1.0,
-)
-
-# %%
-from art_email.data.query_iterators import load_synthetic_queries
-
-scenarios = load_synthetic_queries(
-    split="test", limit=100, exclude_known_bad_queries=False
-)
-# %% Let's look at the ones that 008 is still getting wrong
-from art_email.email_search_tools import read_email
-from art_email.data.local_email_db import generate_database
-
-generate_database()
-
-failures = (
-    df.filter(pl.col("model") == "email-agent-008")
-    .filter(pl.col("metric_answer_correct") == 0)
-    .filter(pl.col("split") == "val")
-    .filter(pl.col("step") == 594)
-)
-print(len(failures))
-
-for i, row in enumerate(failures.rows(named=True)):
-    scenario_id = int(row["metadata_scenario_id"])
-
-    scenario = next((s for s in scenarios if s.id == scenario_id), None)
-
-    if scenario is None:
-        print(f"Scenario {i} not found")
-        break
-
-    message = read_email(scenario.message_ids[0])
-    assert message is not None
-
-    print(f"=== Failure {i} ===")
-    print(f"**Scenario ID**: {scenario.id}")
-    print(f"**Question**: {scenario.question}")
-    print(f"**Expected Answer**: {scenario.answer}")
-    print(f"**Source email**: {message.subject} ({message.message_id})\n{message.body}")
-    print()
-    print("**Model's Response**")
-    print(row)
-    for message in row["messages"]:
-        # print(message)
-        print(f" --- {message['role']} --- ")
-        print(message["content"] or message.get("tool_calls", {}))
-    print()
-
-# %%
-
-max_scores = (
-    df.filter(pl.col("model") == "email-agent-008")
-    .filter(pl.col("split") == "val")
-    .group_by("step")
-    .agg(pl.col("metric_answer_correct").mean().alias("avg_score"))
-    .sort("step")
-)
-print("Scores by step for agent 8:")
-print(max_scores)
-
-# %%
-
-df.filter(pl.col("model") == "email-agent-008").filter(
-    pl.col("split") == "val"
-).group_by("step").count().sort("step")
-
-
-def graph_metric_bar(
+def comparison_models_bar_chart(
     df: pl.DataFrame,
     split: str,
     metric_name: str,
-    save_to: str,
-    models: list[str] | None = None,
+    models: list[str | tuple[str, str]] | None = None,
     title: str | None = None,
     y_label: str | None = None,
     perfect_score: float | None = None,
@@ -522,12 +328,9 @@ def graph_metric_bar(
     metric_name : str
         Name of the metric (without the ``"metric_"`` prefix) or the full
         column name as it appears in *df*.
-    save_to : str
-        Output path for the figure.  The file type is inferred from the suffix
-        and defaults to PNG if none is given.
-    models : list[str] | None, optional
-        Optional explicit ordering / subset of model names.  Works the same way
-        as in :func:`graph_metric`.
+    models : list[str | tuple[str, str]] | None, optional
+        Same semantics as in :func:`training_progress_chart` – accepts either
+        plain model identifiers or ``(internal, display)`` tuples.
     title : str | None, optional
         Custom figure title.  If *None*, a sensible default is generated.
     y_label : str | None, optional
@@ -567,8 +370,33 @@ def graph_metric_bar(
     df = df.filter(pl.col("split") == split)
 
     if models is not None:
-        plot_models = [m for m in models if m in df["model"].unique().to_list()]
-        df = df.filter(pl.col("model").is_in(plot_models))
+        internal_names: list[str] = []
+        display_names: list[str] = []
+        rename_pairs: list[tuple[str, str]] = []
+
+        for entry in models:
+            if isinstance(entry, tuple):
+                internal, display = entry
+            else:
+                internal = display = entry
+
+            internal_names.append(internal)
+            display_names.append(display)
+
+            if internal != display:
+                rename_pairs.append((internal, display))
+
+        df = df.filter(pl.col("model").is_in(internal_names))
+
+        for internal, display in rename_pairs:
+            df = df.with_columns(
+                pl.when(pl.col("model") == internal)
+                .then(pl.lit(display))
+                .otherwise(pl.col("model"))
+                .alias("model")
+            )
+
+        plot_models = display_names
     else:
         step_counts = (
             df.group_by("model")
@@ -715,63 +543,27 @@ def graph_metric_bar(
     # Axes & legend
     # ------------------------------------------------------------------
     ax.set_xticks(x_positions)
-    ax.set_xticklabels([m for m, _, _ in model_stats], rotation=15, ha="right")
+    ax.set_xticklabels([m for m, _, _ in model_stats], rotation=0, ha="center")
     # Remove y‑axis label, ticks, and spine as requested
     ax.spines["left"].set_visible(False)
     ax.set_yticks([])
 
     if title is None:
         title = f"{split}/{metric_name}"
-    ax.set_title(title)
+    ax.set_title(title, pad=10)
 
     # Clean up remaining spines
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     # ------------------------------------------------------------------
-    # Save + return
+    # Save + return - Saving is now handled externally
     # ------------------------------------------------------------------
-    save_path = Path(save_to)
-    if save_path.suffix == "":
-        save_path = save_path.with_suffix(".png")
-    os.makedirs(save_path.parent, exist_ok=True)
-    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    # Removed saving logic:
+    # save_path = Path(save_to)
+    # if save_path.suffix == "":
+    #     save_path = save_path.with_suffix(".png")
+    # os.makedirs(save_path.parent, exist_ok=True)
+    # fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
     return fig
-
-
-graph_metric_bar(
-    df.with_columns(pl.col("model").str.replace("email-agent-008", "qwen-2.5-14b")),
-    "val",
-    "answer_correct",
-    "plots/accuracy_train.png",
-    models=[
-        "gpt-4o",
-        "gemini-2.0-flash",
-        "gemini-2.5-pro",
-        "o4-mini",
-        "qwen-2.5-14b",
-    ],
-    title="Email Agent Success Rate",
-    y_label="Val set success rate",
-)
-
-# %%
-
-df.filter(pl.col("model") == "email-agent-008").filter(pl.col("split") == "val").filter(
-    pl.col("step") > 300
-).filter(pl.col("metric_answer_correct") == 0).group_by(
-    "metadata_scenario_id"
-).count().sort("count", descending=True)
-
-# %%
-
-df.filter(pl.col("step") == 0).filter(pl.col("split") == "val").filter(
-    pl.col("metric_answer_correct") == 0
-).group_by("metadata_scenario_id").count().sort("count", descending=True)
-
-# %%
-
-df.filter(pl.col("step") == 0).filter(pl.col("split") == "val").filter(
-    pl.col("metric_answer_correct") == 0
-).group_by("metadata_scenario_id").count().sort("count", descending=True)

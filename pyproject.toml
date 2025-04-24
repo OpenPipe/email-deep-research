@@ -1,5 +1,5 @@
 [project]
-name = "art-email"
+name = "art-e"
 version = "0.1.0"
 description = "Deep learning research for email search and processing"
 readme = "README.md"
@@ -35,7 +35,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["art_email*"]
+include = ["art_e*"]
 
 [tool.uv.sources]
 openpipe-art = { path = "../ART", editable = true }
+art-e = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "art-e",
+]

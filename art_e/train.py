@@ -3,12 +3,12 @@ import asyncio
 from dotenv import load_dotenv
 from typing import List
 from rollout import rollout
-from art_email.data.query_iterators import load_synthetic_queries
-from art_email.data.types_enron import SyntheticQuery
-from art_email.data.local_email_db import generate_database
+from art_e.data.query_iterators import load_synthetic_queries
+from art_e.data.types_enron import SyntheticQuery
+from art_e.data.local_email_db import generate_database
 from art.utils import iterate_dataset
-from art_email.project_types import ProjectPolicyConfig, TrainingConfig
-from art_email.evaluate.benchmark import benchmark_model
+from art_e.project_types import ProjectPolicyConfig, TrainingConfig
+from art_e.evaluate.benchmark import benchmark_model
 
 load_dotenv()
 
@@ -60,11 +60,24 @@ assert agent_008.config.training_config is not None
 agent_008.config.use_tools = True
 agent_008.config.training_config.trajectories_per_group = 4
 agent_008.config.training_config.groups_per_step = 12
-agent_008.config.training_config.num_epochs = 2
+agent_008.config.training_config.num_epochs = 3
 
 agent_011 = agent_008.model_copy(deep=True)
 agent_011.name = "email-agent-011"
 assert isinstance(agent_011.config, ProjectPolicyConfig)
+assert agent_011.config.training_config is not None
+agent_011.config.training_config.num_epochs = 4
+
+agent_012 = agent_008.model_copy(deep=True)
+agent_012.name = "email-agent-012"
+
+agent_013 = agent_002.model_copy(deep=True)
+agent_013.name = "email-agent-013"
+assert isinstance(agent_013.config, ProjectPolicyConfig)
+assert agent_013.config.training_config is not None
+agent_013.config.training_config.num_epochs = 4
+agent_013.config.training_config.trajectories_per_group = 4
+agent_013.config.training_config.groups_per_step = 24
 
 
 async def run_training(model: art.TrainableModel):
@@ -159,6 +172,10 @@ if __name__ == "__main__":
         config = agent_008
     elif training_config == "011":
         config = agent_011
+    elif training_config == "012":
+        config = agent_012
+    elif training_config == "013":
+        config = agent_013
     else:
         raise ValueError(f"Invalid RUN_ID: {training_config}")
 

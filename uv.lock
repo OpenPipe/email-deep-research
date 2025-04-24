@@ -314,7 +314,7 @@ wheels = [
 ]
 
 [[package]]
-name = "art-email"
+name = "art-e"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -369,6 +369,9 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.62.0" },
     { name = "transformers", specifier = ">=4.50.3" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "art-e", editable = "." }]
 
 [[package]]
 name = "astor"
