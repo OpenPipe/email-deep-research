@@ -31,7 +31,7 @@ def load_env_file(env_path: str) -> Dict[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Launch a SkyPilot training job for email agent using the Python SDK.)",
+        description="Launch a SkyPilot training job for email agent using the Python SDK.",
     )
     parser.add_argument(
         "run_id",
